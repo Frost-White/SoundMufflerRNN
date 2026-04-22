@@ -1,0 +1,5 @@
+data/
+DS_10283_2791.zip
+train_data/
+# Optional: keep folder structure with a placeholder file if needed
+#!data/.gitkeep
