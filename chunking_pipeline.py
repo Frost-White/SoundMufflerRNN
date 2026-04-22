@@ -1,4 +1,5 @@
 import math
+import os
 import wave
 from concurrent.futures import as_completed
 from concurrent.futures.process import ProcessPoolExecutor
@@ -7,6 +8,10 @@ from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import numpy as np
+
+
+# Change to the script's directory to ensure relative paths work correctly
+os.chdir(os.path.dirname(__file__))
 
 
 SAMPLE_RATE = 48000
