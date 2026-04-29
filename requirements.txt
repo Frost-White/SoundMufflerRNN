@@ -1,1 +1,4 @@
 soundfile
+numpy
+torch
+matplotlib
