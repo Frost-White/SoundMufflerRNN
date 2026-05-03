@@ -5,6 +5,8 @@
   --muted: #9aa4b2;
   --primary: #6fcf97;
   --danger: #ff6b6b;
+  --sx: calc(100vw / 1920);
+  --sy: calc(100vh / 1080);
 }
 
 * {
@@ -27,14 +29,24 @@ body {
 .app-content {
   max-width: none;
   margin: 0 auto;
-  padding: 1rem;
+  padding: calc(16 * var(--sy));
   width: 95%;
+  flex: 1;
+}
+
+.app-content--account {
+  padding: 0;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   flex: 1;
 }
 
 .page {
   display: grid;
-  gap: 1rem;
+  gap: calc(16 * var(--sy));
 }
 
 .demo-page {
@@ -43,14 +55,19 @@ body {
 }
 
 .demo-page--upload-only {
-  min-height: calc(100vh - 80px - 2rem);
+  min-height: calc(100vh - 12vh);
   display: flex;
   flex-direction: column;
 }
 
+.demo-page--comparison {
+  min-height: calc(100vh - 12vh);
+  align-content: center;
+}
+
 .nav {
   border-bottom: 1px solid #2e3440;
-  padding: 0.75rem 1rem;
+  padding: calc(12 * var(--sy)) calc(16 * var(--sx));
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -81,19 +98,28 @@ body {
 .card {
   background: var(--panel);
   border: 1px solid #2e3440;
-  border-radius: 8px;
-  padding: 1rem;
+  border-radius: calc(8 * var(--sx));
+  padding: calc(16 * var(--sy)) calc(16 * var(--sx));
 }
 
 .comparison-grid {
   display: grid;
-  gap: 1rem;
+  gap: calc(16 * var(--sy));
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.demo-actions {
+  display: flex;
+  justify-content: center;
+  margin-bottom: calc(8 * var(--sy));
 }
 
 .upload-zone {
   border: 1px dashed #485161;
-  border-radius: 8px;
-  padding: 1rem;
+  border-radius: calc(8 * var(--sx));
+  padding: calc(16 * var(--sy));
   text-align: center;
 }
 
@@ -112,7 +138,7 @@ body {
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  gap: 0.75rem;
+  gap: calc(12 * var(--sy));
   background: var(--bg);
   border-color: #2e3440;
 }
@@ -123,8 +149,8 @@ body {
 
 .btn {
   border: none;
-  border-radius: 6px;
-  padding: 0.55rem 0.9rem;
+  border-radius: calc(6 * var(--sx));
+  padding: calc(10 * var(--sy)) calc(16 * var(--sx));
   background: var(--primary);
   color: #0a0c10;
   cursor: pointer;
@@ -159,20 +185,27 @@ body {
 
 .field {
   display: grid;
-  gap: 0.35rem;
+  gap: calc(6 * var(--sy));
 }
 
 .form {
   display: grid;
-  gap: 0.8rem;
+  gap: calc(14 * var(--sy));
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 10%;
+  row-gap: calc(14 * var(--sy));
 }
 
 input {
   background: #0d1117;
   border: 1px solid #3a4252;
   color: var(--text);
-  padding: 0.5rem 0.6rem;
-  border-radius: 6px;
+  padding: calc(9 * var(--sy)) calc(10 * var(--sx));
+  border-radius: calc(6 * var(--sx));
 }
 
 .status {
@@ -190,23 +223,23 @@ input {
 .row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: calc(8 * var(--sy));
 }
 
 .key-list {
-  margin: 1rem 0 0;
+  margin: calc(16 * var(--sy)) 0 0;
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 0.75rem;
+  gap: calc(12 * var(--sy));
 }
 
 .key-list__item {
-  padding: 0.75rem;
+  padding: calc(12 * var(--sy)) calc(12 * var(--sx));
   border: 1px solid #2e3440;
-  border-radius: 6px;
+  border-radius: calc(6 * var(--sx));
   display: grid;
-  gap: 0.5rem;
+  gap: calc(8 * var(--sy));
 }
 
 .waveform {
@@ -219,4 +252,10 @@ input {
 
 .progress {
   width: 100%;
+}
+
+@media (max-width: 900px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
 }

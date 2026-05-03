@@ -3,3 +3,9 @@ body,
 #root {
   min-height: 100%;
 }
+
+#root {
+  min-height: 100dvh;
+  width: 100%;
+  max-width: 100%;
+}
