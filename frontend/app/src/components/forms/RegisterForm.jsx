@@ -3,6 +3,81 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const symbolRe = /[^a-zA-Z0-9]/
+const lowerRe = /[a-z]/
+const upperRe = /[A-Z]/
+const digitRe = /\d/
+const weakPasswords = new Set([
+  'password',
+  'password123',
+  'qwerty',
+  'qwerty123',
+  '12345678',
+  '123456789',
+  'letmein',
+  'admin123',
+  'welcome123',
+])
+
+function hasSequentialRun(text, run = 4) {
+  if (text.length < run) return false
+  const lower = text.toLowerCase()
+  for (let i = 0; i <= lower.length - run; i++) {
+    let asc = true
+    let desc = true
+    for (let j = 1; j < run; j++) {
+      const prev = lower.charCodeAt(i + j - 1)
+      const curr = lower.charCodeAt(i + j)
+      if (curr !== prev + 1) asc = false
+      if (curr !== prev - 1) desc = false
+    }
+    if (asc || desc) return true
+  }
+  return false
+}
+
+function hasRepeatedRun(text, run = 3) {
+  if (text.length < run) return false
+  let count = 1
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === text[i - 1]) {
+      count++
+      if (count >= run) return true
+    } else {
+      count = 1
+    }
+  }
+  return false
+}
+
+function getPasswordIssue(password, fullName, email) {
+  if (!password) return 'Enter a password.'
+  if (password.length < 10) return 'Use at least 10 characters.'
+  if (password.length > 128) return 'Use 128 characters or fewer.'
+  if (!lowerRe.test(password)) return 'Add at least one lowercase letter.'
+  if (!upperRe.test(password)) return 'Add at least one uppercase letter.'
+  if (!digitRe.test(password)) return 'Add at least one number.'
+  if (!symbolRe.test(password)) return 'Add at least one symbol.'
+
+  const normalized = password.toLowerCase()
+  if (weakPasswords.has(normalized)) return 'This password is too common.'
+  if (hasSequentialRun(password, 4)) return 'Avoid sequential characters like 1234 or abcd.'
+  if (hasRepeatedRun(password, 3)) return 'Avoid repeated characters like aaa or 111.'
+
+  const localPart = email.trim().split('@')[0]?.toLowerCase()
+  const safeName = fullName.trim().toLowerCase()
+  if (localPart && localPart.length >= 3 && normalized.includes(localPart)) {
+    return 'Password must not include your email name.'
+  }
+  if (safeName && safeName.length >= 3) {
+    const nameTokens = safeName.split(/\s+/).filter((t) => t.length >= 3)
+    if (nameTokens.some((token) => normalized.includes(token))) {
+      return 'Password must not include parts of your name.'
+    }
+  }
+
+  return null
+}
 
 function getPasswordStrength(password) {
   if (!password) return 0
@@ -68,7 +143,8 @@ export function RegisterForm() {
 
   const showNameOk = fullName.trim().length >= 2
   const showEmailOk = emailRe.test(email.trim())
-  const showPasswordOk = password.length >= 8
+  const passwordIssue = getPasswordIssue(password, fullName, email)
+  const showPasswordOk = Boolean(password) && !passwordIssue
   const showConfirmOk =
     confirmPassword.length > 0 && password === confirmPassword && showPasswordOk
 
@@ -97,8 +173,8 @@ export function RegisterForm() {
     if (!fullName.trim()) next.fullName = 'Enter your full name.'
     if (!email.trim()) next.email = 'Enter your email address.'
     else if (!emailRe.test(email.trim())) next.email = 'Enter a valid email address.'
-    if (!password) next.password = 'Enter a password.'
-    else if (password.length < 8) next.password = 'Use at least 8 characters.'
+    const nextPasswordIssue = getPasswordIssue(password, fullName, email)
+    if (nextPasswordIssue) next.password = nextPasswordIssue
     if (!confirmPassword) next.confirmPassword = 'Confirm your password.'
     else if (password !== confirmPassword) next.confirmPassword = 'Passwords do not match.'
     if (!agreed) next.agreed = 'You must agree to continue.'

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import '../styles/account-page.css'
@@ -162,8 +162,8 @@ const NAV = [
 ]
 
 const PLAN_OPTIONS = [
-  { id: 'starter', name: 'Starter', price: '$9/mo', blurb: 'For individuals and light use.' },
-  { id: 'pro', name: 'Pro', price: '$29/mo', blurb: 'Unlimited projects and API access.', current: true },
+  { id: 'free', name: 'Free', price: '$0/mo', blurb: 'For individuals and light use.', current: true },
+  { id: 'pro', name: 'Pro', price: '$10/mo', blurb: 'Unlimited projects and API access.' },
   { id: 'enterprise', name: 'Enterprise', price: 'Custom', blurb: 'SLA, SSO, and dedicated support.' },
 ]
 
@@ -190,6 +190,8 @@ export function AccountPage() {
     { id: 'pm2', brand: 'mastercard', last4: '8888', expiry: '08/25', isDefault: false },
   ])
   const [removePaymentId, setRemovePaymentId] = useState(null)
+  const paymentCardRefs = useRef({})
+  const pendingSwapRef = useRef(null)
 
   const [addCardOpen, setAddCardOpen] = useState(false)
   const [addCardLoading, setAddCardLoading] = useState(false)
@@ -383,6 +385,23 @@ export function AccountPage() {
     finishReveal,
   ])
 
+  useLayoutEffect(() => {
+    const pendingSwap = pendingSwapRef.current
+    if (!pendingSwap) return
+    pendingSwapRef.current = null
+    pendingSwap.ids.forEach((cardId) => {
+      const beforeTop = pendingSwap.beforeTops[cardId]
+      const el = paymentCardRefs.current[cardId]
+      if (!el || typeof beforeTop !== 'number') return
+      const deltaY = beforeTop - el.getBoundingClientRect().top
+      if (Math.abs(deltaY) < 1) return
+      el.animate(
+        [{ transform: `translateY(${deltaY}px)` }, { transform: 'translateY(0)' }],
+        { duration: 360, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+      )
+    })
+  }, [paymentMethods])
+
   const onSaveCardStub = () => {
     setAddCardLoading(true)
     window.setTimeout(() => {
@@ -403,7 +422,18 @@ export function AccountPage() {
   }
 
   const makeDefaultPayment = (id) => {
-    setPaymentMethods((list) => list.map((p) => ({ ...p, isDefault: p.id === id })))
+    setPaymentMethods((list) => {
+      const previousDefaultId = list.find((p) => p.isDefault)?.id
+      if (!previousDefaultId || previousDefaultId === id) return list
+      pendingSwapRef.current = {
+        ids: [previousDefaultId, id],
+        beforeTops: {
+          [previousDefaultId]: paymentCardRefs.current[previousDefaultId]?.getBoundingClientRect().top,
+          [id]: paymentCardRefs.current[id]?.getBoundingClientRect().top,
+        },
+      }
+      return list.map((p) => ({ ...p, isDefault: p.id === id }))
+    })
   }
 
   const copyKey = (text, rowId) => {
@@ -440,6 +470,11 @@ export function AccountPage() {
 
   const displayName = user?.name?.trim() || 'Demo User'
   const displayEmail = user?.email?.trim() || 'you@example.com'
+  const renewsOn = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
 
   const NavButtons = ({ classPrefix = 'account-page' }) => (
     <>
@@ -593,7 +628,7 @@ export function AccountPage() {
                 <div className="account-plan-mgmt__hero">
                   <div>
                     <p className="account-plan-mgmt__eyebrow">Current plan</p>
-                    <p className="account-plan-mgmt__title">Pro</p>
+                    <p className="account-plan-mgmt__title">Free</p>
                   </div>
                   <span className="account-badge">Active</span>
                 </div>
@@ -604,11 +639,11 @@ export function AccountPage() {
                   </div>
                   <div>
                     <dt>Price</dt>
-                    <dd>$29 USD / month</dd>
+                    <dd>$0 USD / month</dd>
                   </div>
                   <div>
                     <dt>Renews on</dt>
-                    <dd>Mar 15, 2026</dd>
+                    <dd>{renewsOn}</dd>
                   </div>
                 </dl>
                 <div className="account-plan-mgmt__actions">
@@ -673,7 +708,14 @@ export function AccountPage() {
                 {[...paymentMethods]
                   .sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
                   .map((pm) => (
-                  <li key={pm.id} className="account-pay-card">
+                  <li
+                    key={pm.id}
+                    className="account-pay-card"
+                    ref={(el) => {
+                      if (el) paymentCardRefs.current[pm.id] = el
+                      else delete paymentCardRefs.current[pm.id]
+                    }}
+                  >
                     <div className="account-pay-card__brand">
                       <span
                         className={`brand-badge brand-badge--${pm.brand}`}

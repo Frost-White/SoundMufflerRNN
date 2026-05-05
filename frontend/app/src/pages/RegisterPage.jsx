@@ -1,4 +1,5 @@
 import { useLayoutEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { RegisterForm } from '../components/forms/RegisterForm.jsx'
 import '../styles/register-page.css'
 
@@ -12,7 +13,10 @@ export function RegisterPage() {
   }, [])
 
   return (
-    <div className="register-viewport">
+    <div className="register-viewport register-viewport--register">
+      <Link className="register-page__back-home" to="/">
+        Back to main page
+      </Link>
       <div className="register-page">
         <aside className="register-page__left">
           <div className="register-page__left-inner">
@@ -91,10 +95,9 @@ export function RegisterPage() {
             <div className="register-page__avatar" aria-hidden />
             <div className="register-page__quote-body">
               <blockquote className="register-page__quote-text">
-                “Onboarding was effortless — we went from noisy mixes to polished masters in one
-                afternoon.”
+                “Just buy a new computer.”
               </blockquote>
-              <figcaption className="register-page__quote-name">Maya Chen · Producer</figcaption>
+              <figcaption className="register-page__quote-name">Sercan Yücetaş</figcaption>
             </div>
           </figure>
         </aside>

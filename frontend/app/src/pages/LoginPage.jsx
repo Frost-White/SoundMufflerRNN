@@ -1,4 +1,5 @@
 import { useLayoutEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { LoginForm } from '../components/forms/LoginForm.jsx'
 import '../styles/register-page.css'
 
@@ -13,6 +14,9 @@ export function LoginPage() {
 
   return (
     <div className="register-viewport">
+      <Link className="register-page__back-home" to="/">
+        Back to main page
+      </Link>
       <div className="register-page">
         <aside className="register-page__left">
           <div className="register-page__left-inner">
@@ -60,9 +64,9 @@ export function LoginPage() {
             <div className="register-page__avatar" aria-hidden />
             <div className="register-page__quote-body">
               <blockquote className="register-page__quote-text">
-                “We ship masters faster now — the workflow finally feels as smooth as the output sounds.”
+                “Do not forget to index your data.”
               </blockquote>
-              <figcaption className="register-page__quote-name">Jordan Lee · Audio engineer</figcaption>
+              <figcaption className="register-page__quote-name">Sercan Yücetaş</figcaption>
             </div>
           </figure>
         </aside>

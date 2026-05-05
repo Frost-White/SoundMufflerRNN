@@ -12,11 +12,42 @@
 }
 
 .register-viewport {
+  position: relative;
   height: 100dvh;
   max-height: 100dvh;
   width: 100%;
   overflow: hidden;
   background: var(--bg);
+}
+
+.register-page__back-home {
+  position: absolute;
+  top: 0.85rem;
+  left: 0.85rem;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--register-border);
+  border-radius: 10px;
+  background: #2f3745;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 500;
+  transition: filter 0.15s ease, border-color 0.15s ease;
+}
+
+.register-page__back-home:hover {
+  filter: brightness(1.08);
+  border-color: #4a5568;
+}
+
+.register-page__back-home:focus-visible {
+  outline: 2px solid var(--register-focus);
+  outline-offset: 2px;
 }
 
 .register-page {
@@ -118,7 +149,7 @@
   justify-content: center;
   min-height: 0;
   min-width: 0;
-  padding: clamp(1rem, 3vw, 2rem);
+  padding: clamp(0.75rem, 2.2vh, 1.5rem) clamp(1rem, 2.6vw, 2rem);
   background: var(--bg);
   overflow-x: hidden;
   overflow-y: auto;
@@ -143,7 +174,7 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--register-muted);
-  margin-bottom: 1.25rem;
+  margin-bottom: clamp(0.5rem, 1.4vh, 1rem);
 }
 
 .register-form__title {
@@ -155,7 +186,7 @@
 }
 
 .register-form__sub {
-  margin: 0 0 1.5rem;
+  margin: 0 0 clamp(0.75rem, 1.8vh, 1.15rem);
   font-size: 0.9rem;
   color: var(--register-muted);
 }
@@ -175,7 +206,7 @@
 .register-form__fields {
   display: flex;
   flex-direction: column;
-  gap: 1.1rem;
+  gap: clamp(0.7rem, 1.4vh, 1rem);
 }
 
 .register-form__field {
@@ -367,7 +398,7 @@
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 48px;
+  min-height: 44px;
   text-decoration: none;
   text-align: center;
   padding: 0 1.25rem;
@@ -478,7 +509,7 @@
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  min-height: 46px;
+  min-height: 42px;
   padding: 0 0.75rem;
   font-size: 0.88rem;
   font-weight: 500;
@@ -501,10 +532,16 @@
 }
 
 .register-form__footer {
-  margin: 0.75rem 0 0;
+  margin: clamp(0.35rem, 1vh, 0.6rem) 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.15rem 0.35rem;
   text-align: center;
+  line-height: 1.35;
   font-size: 0.75rem;
   color: var(--register-muted);
+  overflow-wrap: anywhere;
 }
 
 .register-form__footer-link {
@@ -569,6 +606,18 @@
 
   .register-page__right {
     padding: clamp(0.75rem, 3vw, 1.25rem);
+  }
+
+  .register-page__back-home {
+    top: 0.65rem;
+    left: 0.65rem;
+    font-size: 0.78rem;
+  }
+}
+
+@media (max-height: 860px) {
+  .register-viewport--register .register-page__right {
+    align-items: flex-start;
   }
 }
 
