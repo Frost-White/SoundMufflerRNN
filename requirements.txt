@@ -1,4 +1,3 @@
-soundfile
+h5py
 numpy
-torch
-matplotlib
+soundfile
