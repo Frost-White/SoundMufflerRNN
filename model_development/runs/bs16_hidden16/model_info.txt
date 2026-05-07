@@ -1,12 +1,12 @@
 Model Run Info
-created_at: 2026-05-07T12:33:46
+created_at: 2026-05-07T14:19:36
 model_name: TinyDenoiser
 device: cuda
-batch_size: 32
-hidden_size: 8
+batch_size: 16
+hidden_size: 16
 learning_rate: 0.001
 epochs: 10
-trainable_parameters: 89
+trainable_parameters: 177
 train_pairs: 20767
 val_pairs: 2308
 noisy_root: a:\SoundMufflerRNN\data\train\noisy_trainset_56spk_wav
