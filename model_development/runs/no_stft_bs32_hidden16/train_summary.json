@@ -1,0 +1,7 @@
+{
+  "run_tag": "bs32_hidden16",
+  "best_val_loss": 1.3237486966974932,
+  "best_epoch": 10,
+  "total_epochs": 10,
+  "checkpoint_path": "a:\\SoundMufflerRNN\\model_development\\runs\\bs32_hidden16\\bs32_hidden16.pt"
+}
