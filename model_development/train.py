@@ -11,6 +11,10 @@ import sys
 import time
 from datetime import datetime, timezone
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -30,20 +34,21 @@ HYPERPARAMS = {
     "clean_root": _DEFAULT_CLEAN,
     # None -> yeni klasör: runs/<YYYYMMDD_HHMMSS>_<run_tag>
     "out_dir": None,
-    "run_tag": "hopefully it works",
+    "run_tag": "",  # otomatik: h{hidden_dim}_bs{batch_size}_lr{lr}
     "val_fraction": 0.1,
     # model
-    "hidden_dim": 256,
+    "hidden_dim": 2048,
     # eğitim
     "epochs": 20,
     "batch_size": 1024,
     "lr": 1e-3,
-    "workers": 8,
+    "workers": 0,
     "seed": 0,
     "device": "cuda",  # "cuda" | "cpu" | None (None -> cuda varsa cuda)
     # özellik / kayıp
     "log_eps": 1e-8,
 }
+HYPERPARAMS["run_tag"] = f"h{HYPERPARAMS['hidden_dim']}_bs{HYPERPARAMS['batch_size']}_lr{HYPERPARAMS['lr']}"
 
 _LOG_EPS = HYPERPARAMS["log_eps"]
 _RUNS_ROOT = os.path.join(_BASE, "runs")
@@ -79,6 +84,54 @@ def _csv_metric_float(v: object) -> float | int | str:
     if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
         return ""
     return v if isinstance(v, (int, float)) else ""
+
+
+def write_run_plots(out_dir: str, epoch_records: list[dict]) -> None:
+    """Kayıt: loss_curve.png (train/val MSE), snr_curve.png (val SNR kazancı dB)."""
+    if not epoch_records:
+        return
+    epochs = [int(r["epoch"]) for r in epoch_records]
+    train = [r.get("train_mse", r.get("train_loss")) for r in epoch_records]
+    val = [r.get("val_mse", r.get("val_loss")) for r in epoch_records]
+    snr_db = [r.get("val_snr_gain_db") for r in epoch_records]
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(epochs, train, label="train MSE")
+    val_xy = [(e, v) for e, v in zip(epochs, val) if isinstance(v, (int, float)) and math.isfinite(v)]
+    if val_xy:
+        ex, vx = zip(*val_xy)
+        ax.plot(ex, vx, label="val MSE")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("MSE")
+    ax.set_title("Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "loss_curve.png"), dpi=120)
+    plt.close(fig)
+
+    fig2, ax2 = plt.subplots(figsize=(8, 4.5))
+    snr_xy = [(e, s) for e, s in zip(epochs, snr_db) if isinstance(s, (int, float)) and math.isfinite(s)]
+    if snr_xy:
+        ex2, sy = zip(*snr_xy)
+        ax2.plot(ex2, sy, color="C1", label="val SNR gain (dB)")
+        ax2.legend()
+    else:
+        ax2.text(
+            0.5,
+            0.5,
+            "no val SNR (empty val set or NaN)",
+            ha="center",
+            va="center",
+            transform=ax2.transAxes,
+        )
+    ax2.set_xlabel("epoch")
+    ax2.set_ylabel("SNR gain (dB)")
+    ax2.set_title("Validation SNR gain vs clean")
+    ax2.grid(True, alpha=0.3)
+    fig2.tight_layout()
+    fig2.savefig(os.path.join(out_dir, "snr_curve.png"), dpi=120)
+    plt.close(fig2)
 
 
 def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
@@ -387,6 +440,7 @@ def run_training_loop(
         }
         epoch_records.append(rec)
         write_metrics_train_csv(metrics_csv_path, epoch_records)
+        write_run_plots(out_dir, epoch_records)
 
         if not math.isnan(val_loss) and val_loss < best_val:
             best_val = val_loss
@@ -429,6 +483,8 @@ def run_training_loop(
                 "model_info": "model_info.txt",
                 "train_summary": "train_summary.json",
                 "metrics_train_csv": "metrics_train.csv",
+                "loss_curve_png": "loss_curve.png",
+                "snr_curve_png": "snr_curve.png",
                 "last_pt": "last.pt",
                 "last_weights": "last_weights.pt",
                 "best_weights": "best_weights.pt" if has_best else None,
@@ -484,6 +540,7 @@ def main() -> None:
     cfg = dict(hp)
     cfg["out_dir_resolved"] = out_dir
     cfg.update({"freq_bins": FREQ_BINS, "batches_per_train_epoch": len(train_loader), **info})
+    os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "run_config.json"), "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 

@@ -1,0 +1,7 @@
+name: TinyDenoiser
+input_shape: (batch, 481)
+output_shape: (batch, 481)
+freq_bins: 481
+hidden_dim: 256
+num_parameters: 312801
+notes: Input: log-magnitude of noisy STFT per chunk; output: sigmoid mask for magnitude denoising.
