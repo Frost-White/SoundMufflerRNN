@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import argparse
+import csv
 import json
 import math
 import os
@@ -12,36 +12,35 @@ import time
 from datetime import datetime, timezone
 
 import numpy as np
-import soundfile as sf
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from audio_pipeline import CHUNK_HOP, CHUNK_SAMPLES, chunk_waveform, load_audio, stft_chunks
+from audio_pipeline import chunk_waveform, load_audio, stft_chunks
 from model import FREQ_BINS, TinyDenoiser, model_info
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_NOISY = os.path.normpath(os.path.join(_BASE, "..", "data", "train", "noisy_trainset_56spk_wav"))
 _DEFAULT_CLEAN = os.path.normpath(os.path.join(_BASE, "..", "data", "train", "clean_trainset_56spk_wav"))
 
-# --- hiperparametreler: önce burayı düzenle (CLI aynı anahtarlarla bunların üstüne yazabilir) ---
+# --- hiperparametreler: buradan düzenle ---
 HYPERPARAMS = {
     # veri
     "noisy_root": _DEFAULT_NOISY,
     "clean_root": _DEFAULT_CLEAN,
-    # None -> yeni klasör: runs/<YYYYMMDD_HHMMSS>_<run_tag> (eski run'lara dokunmaz)
+    # None -> yeni klasör: runs/<YYYYMMDD_HHMMSS>_<run_tag>
     "out_dir": None,
-    "run_tag": "",
+    "run_tag": "hopefully it works",
     "val_fraction": 0.1,
-    # model (TinyDenoiser)
-    "hidden_dim": 32,
+    # model
+    "hidden_dim": 256,
     # eğitim
-    "epochs": 5,
-    "batch_size": 512,
+    "epochs": 20,
+    "batch_size": 1024,
     "lr": 1e-3,
-    "workers": 0,
+    "workers": 8,
     "seed": 0,
-    "device": "cuda",  # None = cuda varsa cuda, yok cpu
+    "device": "cuda",  # "cuda" | "cpu" | None (None -> cuda varsa cuda)
     # özellik / kayıp
     "log_eps": 1e-8,
 }
@@ -76,6 +75,30 @@ def write_train_summary(path: str, payload: dict) -> None:
         json.dump(out, f, indent=2)
 
 
+def _csv_metric_float(v: object) -> float | int | str:
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return ""
+    return v if isinstance(v, (int, float)) else ""
+
+
+def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
+    """Per-epoch metrics (matches legacy runs e.g. no_stft_bs32_hidden8/metrics_train.csv)."""
+    fieldnames = ["epoch", "train_loss", "val_loss", "val_snr_gain_db", "epoch_time_s"]
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in epoch_records:
+            w.writerow(
+                {
+                    "epoch": r["epoch"],
+                    "train_loss": _csv_metric_float(r.get("train_mse", r.get("train_loss"))),
+                    "val_loss": _csv_metric_float(r.get("val_mse", r.get("val_loss"))),
+                    "val_snr_gain_db": _csv_metric_float(r.get("val_snr_gain_db")),
+                    "epoch_time_s": r.get("epoch_sec", r.get("epoch_time_s", "")),
+                }
+            )
+
+
 def _progress_tick(label: str, done: int, total: int, *, max_ticks: int = 80) -> None:
     """Tek satırda ilerleme; total küçükken her adımda günceller."""
     if total <= 0:
@@ -92,112 +115,108 @@ def _progress_end() -> None:
     sys.stdout.flush()
 
 
-def find_wav_by_basename(root: str, basename: str) -> str | None:
+def _scan_wavs(root: str) -> dict[str, str]:
+    """basename -> full path under `root` for every .wav file."""
+    out: dict[str, str] = {}
     for cur, _, names in os.walk(root):
-        if basename in names:
-            return os.path.join(cur, basename)
-    return None
+        for name in names:
+            if name.lower().endswith(".wav"):
+                out[name] = os.path.join(cur, name)
+    return out
 
 
 def collect_pairs(noisy_root: str, clean_root: str) -> tuple[list[tuple[str, str]], list[str]]:
-    """Scan noisy tree; for each .wav resolve clean twin by filename (same basename)."""
-    noisy_paths: list[str] = []
-    for cur, _, names in os.walk(noisy_root):
-        for name in sorted(names):
-            if name.lower().endswith(".wav"):
-                noisy_paths.append(os.path.join(cur, name))
-
-    total = len(noisy_paths)
-    print(f"[pairs] {total} gürültülü dosya bulundu; temiz çiftleri aranıyor...")
+    """Pair noisy/clean wavs by basename (tek O(N) tarama her tarafta)."""
+    noisy_map = _scan_wavs(noisy_root)
+    clean_map = _scan_wavs(clean_root)
     pairs: list[tuple[str, str]] = []
     missing: list[str] = []
-    for i, noisy_path in enumerate(noisy_paths, start=1):
-        name = os.path.basename(noisy_path)
-        clean_path = find_wav_by_basename(clean_root, name)
-        if clean_path is None:
-            missing.append(noisy_path)
+    for name in sorted(noisy_map):
+        np_path = noisy_map[name]
+        cp = clean_map.get(name)
+        if cp is None:
+            missing.append(np_path)
         else:
-            pairs.append((noisy_path, clean_path))
-        _progress_tick("pairs", i, total)
-    _progress_end()
+            pairs.append((np_path, cp))
     return pairs, missing
 
 
-def num_chunks_for_length(num_samples: int) -> int:
-    """Match `chunk_waveform` stride/hop chunk count without loading audio."""
-    if num_samples < CHUNK_SAMPLES:
-        return 0
-    n_win = num_samples - CHUNK_SAMPLES + 1
-    return (n_win + CHUNK_HOP - 1) // CHUNK_HOP
-
-
-def build_chunk_rows(
-    pairs: list[tuple[str, str]], label: str = "chunk_idx"
-) -> list[tuple[str, str, int]]:
-    """
-    One row = one aligned chunk index for a (noisy_path, clean_path) pair.
-    Chunk index k is always the same temporal frame for noisy and clean after cropping.
-    """
+def preload_stft_features(
+    pairs: list[tuple[str, str]], label: str = "preload"
+) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+    """Disk -> chunk -> |STFT| -> RAM. Per pair: (mag_noisy[N,F], mag_clean[N,F]) float32."""
     total = len(pairs)
     if total:
-        print(f"[{label}] {total} çift için chunk sayıları okunuyor (metadata)...")
-    rows: list[tuple[str, str, int]] = []
+        print(f"[{label}] {total} çift için |STFT| magnitüdleri RAM'e hazırlanıyor...")
+    feats: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
     for i, (noisy_path, clean_path) in enumerate(pairs, start=1):
         try:
-            ln = sf.info(noisy_path).frames
-            lc = sf.info(clean_path).frames
+            nw, _ = load_audio(noisy_path)
+            cw, _ = load_audio(clean_path)
         except Exception as e:
-            print(f"[skip] metadata read failed: {noisy_path} ({e})", file=sys.stderr)
+            print(f"[skip] read failed: {noisy_path} ({e})", file=sys.stderr)
             _progress_tick(label, i, total)
             continue
-        L = min(ln, lc)
-        n = num_chunks_for_length(L)
-        for k in range(n):
-            rows.append((noisy_path, clean_path, k))
+        L = min(len(nw), len(cw))
+        chunks_n = chunk_waveform(nw[:L])
+        chunks_c = chunk_waveform(cw[:L])
+        if chunks_n.shape[0] == 0:
+            _progress_tick(label, i, total)
+            continue
+        mag_n = np.abs(stft_chunks(chunks_n)).astype(np.float32, copy=False)
+        mag_c = np.abs(stft_chunks(chunks_c)).astype(np.float32, copy=False)
+        feats[(noisy_path, clean_path)] = (mag_n, mag_c)
         _progress_tick(label, i, total)
     if total:
         _progress_end()
-    return rows
+    return feats
+
+
+def concat_split_features(
+    pairs: list[tuple[str, str]],
+    feats: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Stack per-pair magnitudes into two contiguous arrays for a train/val split."""
+    parts_n: list[np.ndarray] = []
+    parts_c: list[np.ndarray] = []
+    for key in pairs:
+        item = feats.get(key)
+        if item is None:
+            continue
+        mn, mc = item
+        parts_n.append(mn)
+        parts_c.append(mc)
+    if not parts_n:
+        empty = np.empty((0, FREQ_BINS), dtype=np.float32)
+        return empty, empty
+    return np.concatenate(parts_n, axis=0), np.concatenate(parts_c, axis=0)
 
 
 class AlignedChunkDataset(Dataset):
-    """
-    Each sample is one chunk from an aligned pair; tensors built from the same chunk_idx.
-    Rows must come from `build_chunk_rows` so paths + chunk_idx stay matched.
-    """
+    """Each sample = one chunk of precomputed |STFT| magnitudes living in RAM."""
 
-    def __init__(self, rows: list[tuple[str, str, int]], log_eps: float = _LOG_EPS):
-        self._rows = rows
+    def __init__(
+        self,
+        mag_noisy: np.ndarray,
+        mag_clean: np.ndarray,
+        log_eps: float = _LOG_EPS,
+    ):
+        assert mag_noisy.shape == mag_clean.shape, (mag_noisy.shape, mag_clean.shape)
+        self._mn = mag_noisy
+        self._mc = mag_clean
         self._log_eps = log_eps
 
     def __len__(self) -> int:
-        return len(self._rows)
+        return self._mn.shape[0]
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        noisy_path, clean_path, chunk_idx = self._rows[idx]
-
-        noisy_wav, _ = load_audio(noisy_path)
-        clean_wav, _ = load_audio(clean_path)
-        L = min(len(noisy_wav), len(clean_wav))
-        noisy_wav = noisy_wav[:L].astype(np.float32, copy=False)
-        clean_wav = clean_wav[:L].astype(np.float32, copy=False)
-
-        chunks_n = chunk_waveform(noisy_wav)
-        chunks_c = chunk_waveform(clean_wav)
-        assert chunks_n.shape == chunks_c.shape, (noisy_path, chunks_n.shape, chunks_c.shape)
-
-        cn = chunks_n[chunk_idx]
-        cc = chunks_c[chunk_idx]
-        spec_n = stft_chunks(cn.reshape(1, -1))
-        spec_c = stft_chunks(cc.reshape(1, -1))
-        mag_n = np.abs(spec_n[0]).astype(np.float32)
-        mag_c = np.abs(spec_c[0]).astype(np.float32)
-        x = np.log(mag_n + self._log_eps).astype(np.float32)
-
+        mn = self._mn[idx]
+        mc = self._mc[idx]
+        x = np.log(mn + self._log_eps)
         return {
             "x": torch.from_numpy(x),
-            "mag_noisy": torch.from_numpy(mag_n),
-            "mag_clean": torch.from_numpy(mag_c),
+            "mag_noisy": torch.from_numpy(mn),
+            "mag_clean": torch.from_numpy(mc),
         }
 
 
@@ -243,10 +262,17 @@ def validate(
     loader: DataLoader,
     loss_fn: nn.Module,
     device: torch.device,
-) -> float:
+) -> tuple[float, float]:
+    """Returns (val MSE, val SNR gain vs noisy in dB).
+
+    SNR gain = 10*log10( MSE(noisy,clean) / MSE(pred,clean) ); 0 dB ≈ identity mask.
+    """
     model.eval()
     total = 0.0
     n = 0
+    sse_noisy = 0.0
+    sse_pred = 0.0
+    n_elem = 0
     for batch in loader:
         x = batch["x"].to(device)
         mag_n = batch["mag_noisy"].to(device)
@@ -257,120 +283,98 @@ def validate(
         bs = x.shape[0]
         total += loss.item() * bs
         n += bs
-    return total / max(n, 1)
+        sse_noisy += ((mag_n - mag_c) ** 2).sum().item()
+        sse_pred += ((pred_mag - mag_c) ** 2).sum().item()
+        n_elem += mag_n.numel()
+    if n == 0:
+        return float("nan"), float("nan")
+    avg_loss = total / n
+    if n_elem == 0:
+        return avg_loss, float("nan")
+    mse_noisy = sse_noisy / n_elem
+    mse_pred = sse_pred / n_elem
+    gain_db = 10.0 * math.log10(mse_noisy / (mse_pred + 1e-20))
+    return avg_loss, gain_db
 
 
-def main() -> None:
-    h = HYPERPARAMS
-    p = argparse.ArgumentParser(description="Train TinyDenoiser on noisy/clean wav pairs.")
-    p.add_argument("--noisy-root", default=h["noisy_root"])
-    p.add_argument("--clean-root", default=h["clean_root"])
-    p.add_argument("--epochs", type=int, default=h["epochs"])
-    p.add_argument("--batch-size", type=int, default=h["batch_size"])
-    p.add_argument("--lr", type=float, default=h["lr"])
-    p.add_argument("--hidden-dim", type=int, default=h["hidden_dim"])
-    p.add_argument("--workers", type=int, default=h["workers"])
-    p.add_argument("--val-fraction", type=float, default=h["val_fraction"])
-    p.add_argument("--seed", type=int, default=h["seed"])
-    p.add_argument("--device", default=h["device"], help="cuda | cpu (default: auto)")
-    p.add_argument("--out-dir", default=h["out_dir"])
-    p.add_argument("--run-tag", default=h["run_tag"])
-    p.add_argument("--log-eps", type=float, default=h["log_eps"])
-    args = p.parse_args()
-
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
-    out_dir = resolve_run_dir(args.out_dir, args.run_tag)
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"[run] output_dir={out_dir}")
-
-    pairs, missing = collect_pairs(args.noisy_root, args.clean_root)
+def prepare_datasets(hp: dict) -> tuple[AlignedChunkDataset, AlignedChunkDataset, dict]:
+    """Çiftleri tara, |STFT|'leri RAM'e yükle, train/val split + dataset kur."""
+    print("[step] (1/5) çift listesi taranıyor...")
+    pairs, missing = collect_pairs(hp["noisy_root"], hp["clean_root"])
     if missing:
         print(f"[warn] {len(missing)} noisy files without clean twin (skipped).")
     if not pairs:
         print("No paired wav files found.", file=sys.stderr)
         sys.exit(1)
+    print(f"[step] (1/5) tamam: {len(pairs)} eşleşmiş çift")
 
+    print("[step] (2/5) disk -> |STFT| -> RAM ön yükleme...")
+    feats = preload_stft_features(pairs, label="preload")
+    pairs = [p for p in pairs if p in feats]
+    if not pairs:
+        print("All pairs failed to load.", file=sys.stderr)
+        sys.exit(1)
+    print(f"[step] (2/5) tamam: {len(pairs)} çift RAM'de")
+
+    print("[step] (3/5) train/val split ve birleştirme...")
     random.shuffle(pairs)
-    n_val = int(len(pairs) * args.val_fraction)
+    n_val = int(len(pairs) * hp["val_fraction"])
     n_val = max(min(n_val, len(pairs) - 1), 0) if len(pairs) > 1 else 0
     val_pairs = pairs[:n_val]
     train_pairs = pairs[n_val:]
 
-    train_rows = build_chunk_rows(train_pairs, label="train_chunks")
-    val_rows = build_chunk_rows(val_pairs, label="val_chunks")
+    train_mag_n, train_mag_c = concat_split_features(train_pairs, feats)
+    val_mag_n, val_mag_c = concat_split_features(val_pairs, feats)
+    del feats  # per-pair arrays artık concat'lerin içinde
+
     print(
-        f"[prep] chunk indeksleri: train={len(train_rows)} satır "
-        f"({len(train_pairs)} çift), val={len(val_rows)} satır ({len(val_pairs)} çift)"
+        f"[step] (3/5) tamam: train={train_mag_n.shape[0]} chunk ({len(train_pairs)} çift), "
+        f"val={val_mag_n.shape[0]} chunk ({len(val_pairs)} çift)"
     )
-    if not train_rows:
+    if train_mag_n.shape[0] == 0:
         print("No training chunks (files too short or unreadable).", file=sys.stderr)
         sys.exit(1)
 
-    train_ds = AlignedChunkDataset(train_rows, log_eps=args.log_eps)
-    val_ds = AlignedChunkDataset(val_rows, log_eps=args.log_eps)
+    train_ds = AlignedChunkDataset(train_mag_n, train_mag_c, log_eps=hp["log_eps"])
+    val_ds = AlignedChunkDataset(val_mag_n, val_mag_c, log_eps=hp["log_eps"])
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.workers,
-        collate_fn=collate_batch,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.workers,
-        collate_fn=collate_batch,
-        pin_memory=torch.cuda.is_available(),
-    )
-    if len(train_loader) == 0:
-        print(
-            "Train DataLoader is empty (batch_size > number of train chunks). "
-            "Lower --batch-size.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    info = {
+        "num_pairs": len(pairs),
+        "train_pairs": len(train_pairs),
+        "val_pairs": len(val_pairs),
+        "train_chunks": int(train_mag_n.shape[0]),
+        "val_chunks": int(val_mag_n.shape[0]),
+    }
+    return train_ds, val_ds, info
 
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = TinyDenoiser(hidden_dim=args.hidden_dim).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_fn = nn.MSELoss()
 
-    cfg = vars(args).copy()
-    cfg["out_dir_resolved"] = out_dir
-    cfg["hyperparams_preset"] = {k: HYPERPARAMS[k] for k in HYPERPARAMS}
-    cfg.update(
-        {
-            "freq_bins": FREQ_BINS,
-            "num_pairs": len(pairs),
-            "train_pairs": len(train_pairs),
-            "val_pairs": len(val_pairs),
-            "train_chunks": len(train_rows),
-            "val_chunks": len(val_rows),
-            "batches_per_train_epoch": len(train_loader),
-        }
-    )
-    with open(os.path.join(out_dir, "run_config.json"), "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-
-    write_model_info_txt(os.path.join(out_dir, "model_info.txt"), model)
-
+def run_training_loop(
+    hp: dict,
+    out_dir: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    val_ds_len: int,
+    device: torch.device,
+) -> None:
+    epochs = hp["epochs"]
     started_at = _utc_now_iso()
     epoch_records: list[dict] = []
     best_val = float("inf")
     best_epoch = 0
     sum_epoch_sec = 0.0
     summary_path = os.path.join(out_dir, "train_summary.json")
+    metrics_csv_path = os.path.join(out_dir, "metrics_train.csv")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         t0 = time.perf_counter()
         train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
-        val_loss = validate(model, val_loader, loss_fn, device) if len(val_ds) else float("nan")
+        if val_ds_len:
+            val_loss, val_snr_gain_db = validate(model, val_loader, loss_fn, device)
+        else:
+            val_loss, val_snr_gain_db = float("nan"), float("nan")
         epoch_sec = time.perf_counter() - t0
         sum_epoch_sec += epoch_sec
 
@@ -378,21 +382,27 @@ def main() -> None:
             "epoch": epoch,
             "train_mse": train_loss,
             "val_mse": val_loss,
+            "val_snr_gain_db": val_snr_gain_db,
             "epoch_sec": round(epoch_sec, 3),
         }
         epoch_records.append(rec)
+        write_metrics_train_csv(metrics_csv_path, epoch_records)
 
         if not math.isnan(val_loss) and val_loss < best_val:
             best_val = val_loss
             best_epoch = epoch
             torch.save(model.state_dict(), os.path.join(out_dir, "best_weights.pt"))
 
-        msg = (
-            f"epoch {epoch}/{args.epochs}  "
-            f"train_mse={train_loss:.6f}  val_mse={val_loss:.6f}  "
-            f"epoch_sec={epoch_sec:.1f}"
+        sg = (
+            f"{val_snr_gain_db:.4f}"
+            if isinstance(val_snr_gain_db, float) and math.isfinite(val_snr_gain_db)
+            else "nan"
         )
-        print(msg)
+        print(
+            f"epoch {epoch}/{epochs}  "
+            f"train_mse={train_loss:.6f}  val_mse={val_loss:.6f}  "
+            f"val_snr_gain_db={sg}  epoch_sec={epoch_sec:.1f}"
+        )
 
         ckpt = {
             "epoch": epoch,
@@ -406,12 +416,11 @@ def main() -> None:
 
         has_best = os.path.isfile(os.path.join(out_dir, "best_weights.pt"))
         summary_payload = {
-            "run_tag": args.run_tag or None,
+            "run_tag": hp["run_tag"] or None,
             "run_dir": out_dir,
             "started_at": started_at,
             "epochs_done": epoch,
-            "epochs_total_planned": args.epochs,
-            "epochs": epoch_records,
+            "epochs_total_planned": epochs,
             "best_val_mse": best_val if has_best and math.isfinite(best_val) else None,
             "best_epoch": best_epoch if has_best else None,
             "total_epoch_time_sec": round(sum_epoch_sec, 3),
@@ -419,15 +428,72 @@ def main() -> None:
                 "run_config": "run_config.json",
                 "model_info": "model_info.txt",
                 "train_summary": "train_summary.json",
+                "metrics_train_csv": "metrics_train.csv",
                 "last_pt": "last.pt",
                 "last_weights": "last_weights.pt",
                 "best_weights": "best_weights.pt" if has_best else None,
             },
         }
-        if epoch == args.epochs:
+        if epoch == epochs:
             summary_payload["finished_at"] = _utc_now_iso()
         write_train_summary(summary_path, summary_payload)
 
+
+def main() -> None:
+    hp = HYPERPARAMS
+    random.seed(hp["seed"])
+    torch.manual_seed(hp["seed"])
+
+    out_dir = resolve_run_dir(hp["out_dir"], hp["run_tag"])
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"[run] output_dir={out_dir}")
+
+    train_ds, val_ds, info = prepare_datasets(hp)
+
+    print("[step] (4/5) model ve loader hazırlanıyor...")
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=hp["batch_size"],
+        shuffle=True,
+        num_workers=hp["workers"],
+        collate_fn=collate_batch,
+        pin_memory=torch.cuda.is_available(),
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=hp["batch_size"],
+        shuffle=False,
+        num_workers=hp["workers"],
+        collate_fn=collate_batch,
+        pin_memory=torch.cuda.is_available(),
+    )
+    if len(train_loader) == 0:
+        print(
+            "Train DataLoader is empty (batch_size > number of train chunks). "
+            "Lower batch_size.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    device = torch.device(hp["device"] or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model = TinyDenoiser(hidden_dim=hp["hidden_dim"]).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=hp["lr"])
+    loss_fn = nn.MSELoss()
+
+    cfg = dict(hp)
+    cfg["out_dir_resolved"] = out_dir
+    cfg.update({"freq_bins": FREQ_BINS, "batches_per_train_epoch": len(train_loader), **info})
+    with open(os.path.join(out_dir, "run_config.json"), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+    write_model_info_txt(os.path.join(out_dir, "model_info.txt"), model)
+    print(f"[step] (4/5) tamam: device={device}  batches/epoch={len(train_loader)}")
+
+    print(f"[step] (5/5) eğitim başlıyor ({hp['epochs']} epoch)")
+    run_training_loop(
+        hp, out_dir, model, optimizer, loss_fn, train_loader, val_loader, len(val_ds), device
+    )
     print(f"[done] saved under {out_dir}")
 
 
