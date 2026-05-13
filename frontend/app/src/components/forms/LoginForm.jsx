@@ -1,6 +1,7 @@
 import { useCallback, useId, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
+import { apiFetch } from '../../services/api.js'
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -46,17 +47,25 @@ export function LoginForm() {
     return Object.keys(next).length === 0
   }, [email, password])
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault()
     if (!validate()) return
     setSubmitting(true)
-    window.setTimeout(() => {
+    setErrors((prev) => ({ ...prev, api: undefined }))
+    try {
       const trimmed = email.trim()
-      const displayName = trimmed.includes('@') ? trimmed.split('@')[0] : trimmed || 'User'
-      login({ name: displayName.charAt(0).toUpperCase() + displayName.slice(1), email: trimmed })
-      setSubmitting(false)
+      const data = await apiFetch('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: trimmed, password }),
+      })
+      login({ token: data.access_token, user: data.user })
       navigate('/', { replace: true })
-    }, 900)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Login failed'
+      setErrors((prev) => ({ ...prev, api: msg }))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const onSocialClick = () => {
@@ -166,6 +175,12 @@ export function LoginForm() {
             </p>
           ) : null}
         </div>
+
+        {errors.api ? (
+          <p className="register-form__error" role="alert">
+            {errors.api}
+          </p>
+        ) : null}
 
         <button
           type="submit"

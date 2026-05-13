@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import { apiFetch } from '../services/api.js'
 import '../styles/account-page.css'
 
 function useFocusTrap(containerRef, active) {
@@ -136,23 +137,41 @@ function IconCheck() {
   )
 }
 
-function randomApiKey() {
-  const bytes = new Uint8Array(16)
-  crypto.getRandomValues(bytes)
-  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
-  return `sk-live-${hex}`
-}
-
 function maskFromFull(full) {
   const tail = full.slice(-4)
   return `sk-••••••••••••••••••••${tail}`
 }
 
-function newKeyRowId() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return `k-${crypto.randomUUID()}`
+function formatLocaleDate(isoOrDate) {
+  const d = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+function guessBrand(digits) {
+  const d = digits.replace(/\D/g, '')
+  if (!d.length) return 'visa'
+  if (d[0] === '5') return 'mastercard'
+  return 'visa'
+}
+
+function parseExpiryInput(exp) {
+  const cleaned = exp.trim().replace(/\s/g, '')
+  const slash = cleaned.split('/')
+  if (slash.length >= 2) {
+    const mm = parseInt(slash[0], 10)
+    let yy = parseInt(slash[1], 10)
+    if (yy < 100) yy += 2000
+    if (mm >= 1 && mm <= 12 && yy >= 2000) return { exp_month: mm, exp_year: yy }
   }
-  return `k-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+  const compact = cleaned.replace(/\D/g, '')
+  if (compact.length >= 4) {
+    const mm = parseInt(compact.slice(0, 2), 10)
+    let yy = parseInt(compact.slice(2, 4), 10)
+    yy += 2000
+    if (mm >= 1 && mm <= 12) return { exp_month: mm, exp_year: yy }
+  }
+  return null
 }
 
 const NAV = [
@@ -162,7 +181,7 @@ const NAV = [
 ]
 
 const PLAN_OPTIONS = [
-  { id: 'free', name: 'Free', price: '$0/mo', blurb: 'For individuals and light use.', current: true },
+  { id: 'free', name: 'Free', price: '$0/mo', blurb: 'For individuals and light use.' },
   { id: 'pro', name: 'Pro', price: '$10/mo', blurb: 'Unlimited projects and API access.' },
   { id: 'enterprise', name: 'Enterprise', price: 'Custom', blurb: 'SLA, SSO, and dedicated support.' },
 ]
@@ -185,14 +204,15 @@ export function AccountPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [activeNav, setActiveNav] = useState('account')
 
-  const [paymentMethods, setPaymentMethods] = useState([
-    { id: 'pm1', brand: 'visa', last4: '4242', expiry: '12/26', isDefault: true },
-    { id: 'pm2', brand: 'mastercard', last4: '8888', expiry: '08/25', isDefault: false },
-  ])
+  const [subscription, setSubscription] = useState(null)
+  const [accountLoadError, setAccountLoadError] = useState(null)
+  const [planActionError, setPlanActionError] = useState(null)
+  const [keyActionError, setKeyActionError] = useState(null)
+  const [paymentDefaultError, setPaymentDefaultError] = useState(null)
+
+  const [paymentMethods, setPaymentMethods] = useState([])
   const [removePaymentId, setRemovePaymentId] = useState(null)
   const paymentCardRefs = useRef({})
-  const pendingSwapRef = useRef(null)
-
   const [addCardOpen, setAddCardOpen] = useState(false)
   const [addCardLoading, setAddCardLoading] = useState(false)
   const [addCardSuccess, setAddCardSuccess] = useState(false)
@@ -200,10 +220,7 @@ export function AccountPage() {
   const [cardExpiry, setCardExpiry] = useState('')
   const [cardCvc, setCardCvc] = useState('')
 
-  const [apiKeys, setApiKeys] = useState([
-    { id: 'k1', name: 'Production Key', created: 'Jan 15, 2024', masked: 'sk-••••••••••••••••••••3f9a' },
-    { id: 'k2', name: 'Test Key', created: 'Mar 2, 2024', masked: 'sk-••••••••••••••••••••8b2c' },
-  ])
+  const [apiKeys, setApiKeys] = useState([])
   const [revokeKeyId, setRevokeKeyId] = useState(null)
   const [removingKeyId, setRemovingKeyId] = useState(null)
   const [copyFlashId, setCopyFlashId] = useState(null)
@@ -222,7 +239,42 @@ export function AccountPage() {
   const [planChangeLoading, setPlanChangeLoading] = useState(false)
   const [planChangeDone, setPlanChangeDone] = useState(false)
   const [cancelSubConfirm, setCancelSubConfirm] = useState(false)
-  const [cancelSubNote, setCancelSubNote] = useState(false)
+
+  const refreshAccount = useCallback(async () => {
+    try {
+      const [sub, pms, keys] = await Promise.all([
+        apiFetch('/billing/subscription'),
+        apiFetch('/billing/payment-methods'),
+        apiFetch('/keys'),
+      ])
+      setSubscription(sub)
+      setAccountLoadError(null)
+      setPaymentMethods(
+        pms.map((pm) => ({
+          id: pm.id,
+          brand: pm.brand,
+          last4: pm.last4,
+          expiry: pm.expiry,
+          isDefault: pm.is_default,
+        })),
+      )
+      setApiKeys(
+        keys.map((k) => ({
+          id: k.id,
+          name: k.name,
+          created: formatLocaleDate(k.created),
+          masked: k.masked,
+        })),
+      )
+    } catch (e) {
+      setAccountLoadError(e instanceof Error ? e.message : 'Failed to load account')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isLoggedIn) return undefined
+    refreshAccount()
+  }, [isLoggedIn, refreshAccount])
 
   useFocusTrap(addCardModalRef, addCardOpen)
   useFocusTrap(revealModalRef, revealOpen)
@@ -245,18 +297,15 @@ export function AccountPage() {
     setCardCvc('')
   }, [])
 
-  const finishReveal = useCallback((saveKey) => {
-    setRevealOpen(false)
-    setRevealedKey('')
-    setPendingMaskedRow((pending) => {
-      if (saveKey && pending) {
-        setApiKeys((list) =>
-          list.some((k) => k.id === pending.id) ? list : [pending, ...list],
-        )
-      }
-      return null
-    })
-  }, [])
+  const finishReveal = useCallback(
+    async (saveKey) => {
+      setRevealOpen(false)
+      setRevealedKey('')
+      setPendingMaskedRow(null)
+      if (saveKey) await refreshAccount()
+    },
+    [refreshAccount],
+  )
 
   const closeKeyNameModal = useCallback(() => {
     setKeyNameModalOpen(false)
@@ -267,6 +316,7 @@ export function AccountPage() {
   const openKeyNameModal = useCallback(() => {
     setNewKeyNameInput('')
     setKeyNameError(null)
+    setKeyActionError(null)
     setKeyNameModalOpen(true)
   }, [])
 
@@ -274,44 +324,61 @@ export function AccountPage() {
     setPlanModalOpen(false)
     setPlanChangeLoading(false)
     setPlanChangeDone(false)
+    setPlanActionError(null)
   }, [])
 
   const openPlanModal = useCallback(() => {
     setPlanChangeLoading(false)
     setPlanChangeDone(false)
+    setPlanActionError(null)
     setPlanModalOpen(true)
   }, [])
 
-  const stubPlanChange = useCallback(() => {
-    setPlanChangeLoading(true)
-    setPlanChangeDone(false)
-    window.setTimeout(() => {
-      setPlanChangeLoading(false)
-      setPlanChangeDone(true)
-    }, 700)
-  }, [])
+  const stubPlanChange = useCallback(
+    async (planId) => {
+      setPlanChangeLoading(true)
+      setPlanChangeDone(false)
+      setPlanActionError(null)
+      try {
+        await apiFetch('/billing/subscription', {
+          method: 'PATCH',
+          body: JSON.stringify({ plan_id: planId }),
+        })
+        await refreshAccount()
+        setPlanChangeDone(true)
+      } catch (e) {
+        setPlanActionError(e instanceof Error ? e.message : 'Could not update plan')
+      } finally {
+        setPlanChangeLoading(false)
+      }
+    },
+    [refreshAccount],
+  )
 
-  const runGenerateFlow = useCallback((displayName) => {
+  const runGenerateFlow = useCallback(async (displayName) => {
     setGenerateLoading(true)
-    window.setTimeout(() => {
-      const key = randomApiKey()
-      setRevealedKey(key)
-      setPendingMaskedRow({
-        id: newKeyRowId(),
-        name: displayName,
-        created: new Date().toLocaleDateString(undefined, {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        }),
-        masked: maskFromFull(key),
+    setKeyActionError(null)
+    try {
+      const res = await apiFetch('/keys', {
+        method: 'POST',
+        body: JSON.stringify({ name: displayName }),
       })
-      setGenerateLoading(false)
+      setRevealedKey(res.key)
+      setPendingMaskedRow({
+        id: res.id,
+        name: res.name,
+        created: formatLocaleDate(res.created_at),
+        masked: maskFromFull(res.key),
+      })
       setRevealOpen(true)
-    }, 1000)
+    } catch (e) {
+      setKeyActionError(e instanceof Error ? e.message : 'Could not create API key')
+    } finally {
+      setGenerateLoading(false)
+    }
   }, [])
 
-  const confirmGenerateFromModal = () => {
+  const confirmGenerateFromModal = async () => {
     const name = newKeyNameInput.trim()
     if (!name) {
       setKeyNameError('Enter a key name.')
@@ -324,7 +391,7 @@ export function AccountPage() {
     setKeyNameModalOpen(false)
     setNewKeyNameInput('')
     setKeyNameError(null)
-    runGenerateFlow(name)
+    await runGenerateFlow(name)
   }
 
   useEffect(() => {
@@ -385,55 +452,51 @@ export function AccountPage() {
     finishReveal,
   ])
 
-  useLayoutEffect(() => {
-    const pendingSwap = pendingSwapRef.current
-    if (!pendingSwap) return
-    pendingSwapRef.current = null
-    pendingSwap.ids.forEach((cardId) => {
-      const beforeTop = pendingSwap.beforeTops[cardId]
-      const el = paymentCardRefs.current[cardId]
-      if (!el || typeof beforeTop !== 'number') return
-      const deltaY = beforeTop - el.getBoundingClientRect().top
-      if (Math.abs(deltaY) < 1) return
-      el.animate(
-        [{ transform: `translateY(${deltaY}px)` }, { transform: 'translateY(0)' }],
-        { duration: 360, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
-      )
-    })
-  }, [paymentMethods])
-
-  const onSaveCardStub = () => {
+  const onSaveCardStub = async () => {
+    const digits = cardNumber.replace(/\D/g, '')
+    const last4 = digits.slice(-4)
+    const exp = parseExpiryInput(cardExpiry)
+    if (last4.length !== 4 || !exp) {
+      return
+    }
     setAddCardLoading(true)
-    window.setTimeout(() => {
-      setAddCardLoading(false)
+    setAddCardSuccess(false)
+    try {
+      await apiFetch('/billing/payment-methods', {
+        method: 'POST',
+        body: JSON.stringify({
+          brand: guessBrand(digits),
+          last4,
+          exp_month: exp.exp_month,
+          exp_year: exp.exp_year,
+        }),
+      })
+      await refreshAccount()
       setAddCardSuccess(true)
-    }, 900)
+    } catch {
+      setAddCardSuccess(false)
+    } finally {
+      setAddCardLoading(false)
+    }
   }
 
-  const confirmRemovePayment = (id) => {
-    setPaymentMethods((list) => {
-      const next = list.filter((p) => p.id !== id)
-      if (next.length > 0 && !next.some((p) => p.isDefault)) {
-        return next.map((p, i) => ({ ...p, isDefault: i === 0 }))
-      }
-      return next
-    })
-    setRemovePaymentId(null)
+  const confirmRemovePayment = async (id) => {
+    try {
+      await apiFetch(`/billing/payment-methods/${id}`, { method: 'DELETE' })
+      await refreshAccount()
+    } finally {
+      setRemovePaymentId(null)
+    }
   }
 
-  const makeDefaultPayment = (id) => {
-    setPaymentMethods((list) => {
-      const previousDefaultId = list.find((p) => p.isDefault)?.id
-      if (!previousDefaultId || previousDefaultId === id) return list
-      pendingSwapRef.current = {
-        ids: [previousDefaultId, id],
-        beforeTops: {
-          [previousDefaultId]: paymentCardRefs.current[previousDefaultId]?.getBoundingClientRect().top,
-          [id]: paymentCardRefs.current[id]?.getBoundingClientRect().top,
-        },
-      }
-      return list.map((p) => ({ ...p, isDefault: p.id === id }))
-    })
+  const makeDefaultPayment = async (id) => {
+    setPaymentDefaultError(null)
+    try {
+      await apiFetch(`/billing/payment-methods/${id}/default`, { method: 'PATCH' })
+      await refreshAccount()
+    } catch (e) {
+      setPaymentDefaultError(e instanceof Error ? e.message : 'Could not set default card')
+    }
   }
 
   const copyKey = (text, rowId) => {
@@ -450,13 +513,15 @@ export function AccountPage() {
     setRevokeKeyId(id)
   }
 
-  const confirmRevoke = (id) => {
+  const confirmRevoke = async (id) => {
     setRemovingKeyId(id)
-    window.setTimeout(() => {
-      setApiKeys((list) => list.filter((k) => k.id !== id))
+    try {
+      await apiFetch(`/keys/${id}`, { method: 'DELETE' })
+      await refreshAccount()
+    } finally {
       setRevokeKeyId(null)
       setRemovingKeyId(null)
-    }, 320)
+    }
   }
 
   const onSignOut = () => {
@@ -470,11 +535,13 @@ export function AccountPage() {
 
   const displayName = user?.name?.trim() || 'Demo User'
   const displayEmail = user?.email?.trim() || 'you@example.com'
-  const renewsOn = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
+  const renewsOn = subscription ? formatLocaleDate(subscription.current_period_end) : '—'
+  const priceLabel =
+    subscription == null
+      ? '—'
+      : subscription.price_usd_per_month == null
+        ? 'Custom'
+        : `$${subscription.price_usd_per_month} USD / month`
 
   const NavButtons = ({ classPrefix = 'account-page' }) => (
     <>
@@ -621,25 +688,42 @@ export function AccountPage() {
                 Plan management
               </h2>
               <p className="account-page__lead account-page__lead--compact">
-                View your subscription and switch plans. Changes apply after checkout when billing is connected.
+                View your subscription and switch plans.
               </p>
+
+              {accountLoadError ? (
+                <p className="account-page__stub-note" role="alert">
+                  {accountLoadError}
+                </p>
+              ) : null}
+              {planActionError ? (
+                <p className="account-page__stub-note" role="alert">
+                  {planActionError}
+                </p>
+              ) : null}
 
               <div className="account-plan-mgmt" aria-labelledby={`${baseId}-plan-mgmt-h`}>
                 <div className="account-plan-mgmt__hero">
                   <div>
                     <p className="account-plan-mgmt__eyebrow">Current plan</p>
-                    <p className="account-plan-mgmt__title">Free</p>
+                    <p className="account-plan-mgmt__title">{subscription?.plan_display_name ?? '…'}</p>
                   </div>
-                  <span className="account-badge">Active</span>
+                  <span className="account-badge">
+                    {subscription?.status === 'active' && !subscription?.cancel_at_period_end
+                      ? 'Active'
+                      : subscription?.cancel_at_period_end
+                        ? 'Canceling'
+                        : subscription?.status ?? '—'}
+                  </span>
                 </div>
                 <dl className="account-plan-mgmt__dl">
                   <div>
                     <dt>Billing cycle</dt>
-                    <dd>Monthly</dd>
+                    <dd>{subscription?.billing_cycle ?? '—'}</dd>
                   </div>
                   <div>
                     <dt>Price</dt>
-                    <dd>$0 USD / month</dd>
+                    <dd>{priceLabel}</dd>
                   </div>
                   <div>
                     <dt>Renews on</dt>
@@ -656,9 +740,20 @@ export function AccountPage() {
                       <button
                         type="button"
                         className="account-btn account-btn--danger"
-                        onClick={() => {
+                        onClick={async () => {
                           setCancelSubConfirm(false)
-                          setCancelSubNote(true)
+                          setPlanActionError(null)
+                          try {
+                            await apiFetch('/billing/subscription', {
+                              method: 'PATCH',
+                              body: JSON.stringify({ cancel_at_period_end: true }),
+                            })
+                            await refreshAccount()
+                          } catch (e) {
+                            setPlanActionError(
+                              e instanceof Error ? e.message : 'Could not update subscription',
+                            )
+                          }
                         }}
                       >
                         Yes
@@ -676,17 +771,17 @@ export function AccountPage() {
                       type="button"
                       className="account-btn account-btn--ghost"
                       onClick={() => setCancelSubConfirm(true)}
-                      disabled={cancelSubNote}
+                      disabled={Boolean(subscription?.cancel_at_period_end)}
                     >
                       Cancel subscription
                     </button>
                   )}
                 </div>
-                {cancelSubNote && (
+                {subscription?.cancel_at_period_end ? (
                   <p className="account-page__stub-note" role="status" aria-live="polite">
-                    Cancellation scheduled — available once backend is connected.
+                    Cancellation scheduled for the end of this billing period.
                   </p>
-                )}
+                ) : null}
               </div>
             </section>
 
@@ -702,6 +797,11 @@ export function AccountPage() {
               <p className="account-page__lead">
                 Manage cards on file. Your plan is managed under Account → Plan management.
               </p>
+              {paymentDefaultError ? (
+                <p className="account-page__stub-note" role="alert">
+                  {paymentDefaultError}
+                </p>
+              ) : null}
 
               <h2 className="account-page__h2">Payment methods</h2>
               <ul className="account-pay-list">
@@ -810,6 +910,11 @@ export function AccountPage() {
                   Never share your API keys. Do not expose them in client-side code or public repositories.
                 </p>
               </div>
+              {keyActionError ? (
+                <p className="account-page__stub-note" role="alert">
+                  {keyActionError}
+                </p>
+              ) : null}
 
               <div>
                 {apiKeys.map((row) => (
@@ -960,26 +1065,34 @@ export function AccountPage() {
             <h2 id={`${baseId}-plan-modal-title`} className="account-modal__title">
               Change plan
             </h2>
-            <p className="account-page__lead account-page__lead--compact">Pick a plan to continue. Checkout will open when billing is live.</p>
+            <p className="account-page__lead account-page__lead--compact">Pick a plan to switch your subscription.</p>
+            {planActionError ? (
+              <p className="account-page__stub-note" role="alert">
+                {planActionError}
+              </p>
+            ) : null}
             <div className="account-plan-picker">
-              {PLAN_OPTIONS.map((opt) => (
+              {PLAN_OPTIONS.map((opt) => {
+                const isCurrent = subscription?.plan_id === opt.id
+                return (
                 <button
                   key={opt.id}
                   type="button"
-                  className={`account-plan-picker__tier ${opt.current ? 'is-current' : ''}`}
-                  disabled={planChangeLoading}
-                  onClick={stubPlanChange}
+                  className={`account-plan-picker__tier ${isCurrent ? 'is-current' : ''}`}
+                  disabled={planChangeLoading || isCurrent}
+                  onClick={() => stubPlanChange(opt.id)}
                 >
                   <div className="account-plan-picker__tier-head">
                     <span className="account-plan-picker__tier-name">{opt.name}</span>
                     <span className="account-plan-picker__tier-meta">
-                      {opt.current && <span className="account-badge">Current</span>}
+                      {isCurrent ? <span className="account-badge">Current</span> : null}
                       <span className="account-plan-picker__tier-price">{opt.price}</span>
                     </span>
                   </div>
                   <p className="account-plan-picker__tier-blurb">{opt.blurb}</p>
                 </button>
-              ))}
+                )
+              })}
             </div>
             {planChangeLoading && (
               <p className="account-plan-picker__status" role="status" aria-live="polite">
@@ -989,11 +1102,11 @@ export function AccountPage() {
                 </span>
               </p>
             )}
-            {planChangeDone && (
+            {planChangeDone ? (
               <p className="account-page__stub-note" role="status" aria-live="polite">
-                Plan update queued — available once backend is connected.
+                Plan updated.
               </p>
-            )}
+            ) : null}
             <div className="account-modal__actions">
               <button type="button" className="account-btn account-btn--ghost" onClick={closePlanModal}>
                 Close
@@ -1078,11 +1191,11 @@ export function AccountPage() {
                 )}
               </button>
             </div>
-            {addCardSuccess && (
+            {addCardSuccess ? (
               <p className="account-page__stub-note" role="status" aria-live="polite">
-                Card saved — available once backend is connected.
+                Card saved (masked metadata only; no full card number is stored).
               </p>
-            )}
+            ) : null}
           </div>
         </>
       )}
@@ -1131,13 +1244,10 @@ export function AccountPage() {
               type="button"
               className="account-btn account-btn--ghost"
               style={{ width: '100%' }}
-              onClick={() => finishReveal(true)}
+              onClick={() => void finishReveal(true)}
             >
               Done
             </button>
-            <p className="account-page__stub-note" style={{ marginTop: '0.75rem' }}>
-              Available once backend is connected.
-            </p>
           </div>
         </>
       )}

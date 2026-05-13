@@ -1,6 +1,7 @@
 import { useCallback, useId, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
+import { apiFetch } from '../../services/api.js'
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const symbolRe = /[^a-zA-Z0-9]/
@@ -119,6 +120,7 @@ function Spinner() {
 
 export function RegisterForm() {
   const { login } = useAuth()
+  const navigate = useNavigate()
   const baseId = useId()
   const fullNameId = `${baseId}-fullName`
   const emailId = `${baseId}-email`
@@ -134,7 +136,6 @@ export function RegisterForm() {
   const [showPassword, setShowPassword] = useState(false)
 
   const [errors, setErrors] = useState({})
-  const [successView, setSuccessView] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [socialHint, setSocialHint] = useState(null)
   const socialTimerRef = useRef(null)
@@ -157,17 +158,6 @@ export function RegisterForm() {
     })
   }, [])
 
-  const resetAll = useCallback(() => {
-    setFullName('')
-    setEmail('')
-    setPassword('')
-    setConfirmPassword('')
-    setAgreed(false)
-    setErrors({})
-    setSuccessView(false)
-    setSubmitting(false)
-  }, [])
-
   const validate = useCallback(() => {
     const next = {}
     if (!fullName.trim()) next.fullName = 'Enter your full name.'
@@ -182,15 +172,28 @@ export function RegisterForm() {
     return Object.keys(next).length === 0
   }, [fullName, email, password, confirmPassword, agreed])
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault()
     if (!validate()) return
     setSubmitting(true)
-    window.setTimeout(() => {
+    setErrors((prev) => ({ ...prev, api: undefined }))
+    try {
+      const data = await apiFetch('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          full_name: fullName.trim(),
+        }),
+      })
+      login({ token: data.access_token, user: data.user })
+      navigate('/', { replace: true })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Registration failed'
+      setErrors((prev) => ({ ...prev, api: msg }))
+    } finally {
       setSubmitting(false)
-      login({ name: fullName.trim(), email: email.trim() })
-      setSuccessView(true)
-    }, 1500)
+    }
   }
 
   const onSocialClick = () => {
@@ -200,30 +203,6 @@ export function RegisterForm() {
       setSocialHint(null)
       socialTimerRef.current = null
     }, 3200)
-  }
-
-  if (successView) {
-    return (
-      <div className="register-form register-form--success" role="status" aria-live="polite">
-        <div className="register-form__success-icon" aria-hidden>
-          <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
-            <circle cx="28" cy="28" r="28" fill="var(--register-success-bg, rgba(111,207,151,0.15))" />
-            <path
-              d="M16 28.5l8 8 16-16"
-              stroke="var(--primary)"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </div>
-        <h1 className="register-form__success-title">You&apos;re all set!</h1>
-        <p className="register-form__success-lead">Check your inbox to verify your email.</p>
-        <Link className="register-form__btn-primary register-form__btn-primary--wide" to="/login">
-          Back to login
-        </Link>
-      </div>
-    )
   }
 
   const strengthClass =
@@ -441,6 +420,12 @@ export function RegisterForm() {
             </p>
           ) : null}
         </div>
+
+        {errors.api ? (
+          <p className="register-form__error" role="alert">
+            {errors.api}
+          </p>
+        ) : null}
 
         <button
           type="submit"

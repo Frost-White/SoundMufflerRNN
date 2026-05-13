@@ -1,0 +1,13 @@
+{
+  "include": ["app", "alembic"],
+  "exclude": ["**/__pycache__"],
+  "venvPath": "..",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "pythonVersion": "3.11",
+      "extraPaths": ["."]
+    }
+  ]
+}

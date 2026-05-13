@@ -3,5 +3,7 @@ DS_10283_2791.zip
 train_data/
 __pycache__/
 .venv/
+.env
+backend/.env
 # Optional: keep folder structure with a placeholder file if needed
 #!data/.gitkeep

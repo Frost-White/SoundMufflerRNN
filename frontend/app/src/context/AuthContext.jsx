@@ -1,6 +1,19 @@
-import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from 'react'
+import { apiFetch } from '../services/api.js'
 
 const STORAGE_KEY = 'soundmuffler_session'
+
+function normalizeUser(u) {
+  if (!u || typeof u !== 'object') return null
+  const fullName = String(u.full_name ?? u.name ?? '')
+  return {
+    id: u.id,
+    email: String(u.email ?? ''),
+    full_name: fullName,
+    name: fullName,
+    email_verified: Boolean(u.email_verified),
+  }
+}
 
 function readSession() {
   try {
@@ -8,7 +21,10 @@ function readSession() {
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
-    return { name: String(parsed.name ?? ''), email: String(parsed.email ?? '') }
+    if (!parsed.token) return null
+    const user = normalizeUser(parsed.user)
+    if (!user?.email) return null
+    return { token: String(parsed.token), user }
   } catch {
     return null
   }
@@ -40,10 +56,29 @@ function setSession(next) {
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const user = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  const auth = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+
+  useEffect(() => {
+    let cancelled = false
+    const s = readSession()
+    if (!s?.token) return undefined
+
+    apiFetch('/auth/me', { token: s.token })
+      .then((me) => {
+        if (!cancelled) setSession({ token: s.token, user: normalizeUser(me) })
+      })
+      .catch(() => {
+        if (!cancelled) setSession(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const login = useCallback((payload) => {
-    setSession({ name: payload.name, email: payload.email })
+    const user = normalizeUser(payload.user)
+    if (!user || !payload.token) return
+    setSession({ token: String(payload.token), user })
   }, [])
 
   const logout = useCallback(() => {
@@ -52,12 +87,13 @@ export function AuthProvider({ children }) {
 
   const value = useMemo(
     () => ({
-      user,
-      isLoggedIn: Boolean(user?.email),
+      user: auth?.user ?? null,
+      token: auth?.token ?? null,
+      isLoggedIn: Boolean(auth?.token && auth?.user?.email),
       login,
       logout,
     }),
-    [user, login, logout],
+    [auth, login, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
