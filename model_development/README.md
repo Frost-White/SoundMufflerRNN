@@ -110,6 +110,70 @@ python demo_single_pair_forward.py --help
 
 İsteğe bağlı `--weights` ile eğitilmiş `state_dict` yüklenebilir; model boyutu `--hidden-dim` / `--gru-layers` ile eşleşmeli.
 
+## Inference / Reconstruction Pipeline
+
+Inference tarafında (hem `eval_one.py` hem `eval.py`) kullanılan dönüşüm sırası:
+
+1. `load_audio` ile noisy dalgayı yükle (48 kHz mono).
+2. `chunk_waveform` ile overlap'lı zaman chunk'larına böl.
+3. `stft_chunks` ile analiz spektrumu al ve `log(|X| + eps)` feature üret.
+4. `GRUChunkDenoiser` ile maske hesapla (`mask[T, F]`).
+5. Sentez için chunk'ların `rfft` spektrumunu al.
+6. `enhanced_spec = mask * synth_spec` uygula.
+7. `irfft` ile chunk sinyallerine dön.
+8. `overlap_add_average_from_chunks` ile zaman domeninde birleştir.
+9. Gerekirse uzunluğu orijinal noisy uzunluğuna hizala.
+10. `soundfile.write` ile çıktı WAV kaydet.
+
+Bu akış, identity-mask (`mask=1`) durumunda neredeyse kayıpsız reconstruct için seçildi.
+
+## Eval scripts
+
+### 1) Tek dosya: `eval_one.py`
+
+```text
+cd model_development
+python eval_one.py --noisy-file ..\data\test\noisy_testset_wav\p257_002.wav
+```
+
+Debug için:
+
+```text
+python eval_one.py --noisy-file ..\data\test\noisy_testset_wav\p257_002.wav --identity-mask
+```
+
+### 2) Tüm test set: `eval.py`
+
+`eval.py`, basename ile noisy-clean eşleşmesini yapar ve tüm çiftlerde metrik üretir.
+
+Varsayılan kökler:
+
+- `..\data\test\noisy_testset_wav`
+- `..\data\test\clean_testset_wav`
+
+Örnek:
+
+```text
+cd model_development
+python eval.py --max-files 10
+python eval.py
+```
+
+Üretilen çıktılar:
+
+- `eval_outputs/metrics_eval.csv` (dosya bazlı skorlar)
+- `eval_outputs/eval_summary.json` (ortalama/medyan/std özet)
+
+Raporlanan metrikler:
+
+- SNR
+- SI-SDR
+- SI-SNR
+- STOI (`pystoi`)
+- PESQ (`pesq`)
+
+Not: STOI/PESQ hesapları için sinyaller değerlendirme sırasında 16 kHz'e resample edilir.
+
 ## Hiperparametre özeti (`train.py` — `HYPERPARAMS`)
 
 - Veri: `noisy_root`, `clean_root`, `val_fraction`, `log_eps`
