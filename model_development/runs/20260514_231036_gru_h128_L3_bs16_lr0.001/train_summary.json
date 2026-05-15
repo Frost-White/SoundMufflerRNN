@@ -1,0 +1,23 @@
+{
+  "run_tag": "gru_h128_L3_bs16_lr0.001",
+  "run_dir": "c:\\SoundMufflerRNN\\model_development\\runs\\20260514_231036_gru_h128_L3_bs16_lr0.001",
+  "started_at": "2026-05-14T20:38:15.402369+00:00",
+  "epochs_done": 25,
+  "epochs_total_planned": 25,
+  "best_val_mse": 0.08542341617191365,
+  "best_epoch": 23,
+  "total_epoch_time_sec": 28036.455,
+  "artifacts": {
+    "run_config": "run_config.json",
+    "model_info": "model_info.txt",
+    "train_summary": "train_summary.json",
+    "metrics_train_csv": "metrics_train.csv",
+    "loss_curve_png": "loss_curve.png",
+    "snr_curve_png": "snr_curve.png",
+    "last_pt": "last.pt",
+    "last_weights": "last_weights.pt",
+    "best_weights": "best_weights.pt"
+  },
+  "finished_at": "2026-05-15T04:25:54.029580+00:00",
+  "last_updated_at": "2026-05-15T04:25:54.030189+00:00"
+}

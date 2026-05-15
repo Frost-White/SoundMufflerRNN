@@ -1,7 +1,10 @@
 import multiprocessing
 import os
 import sys
+
 import soundfile as sf
+
+from console_bar import bar_line
 
 # Configuration
 SR = 48000                    # fixed sample rate of all audio files
@@ -21,17 +24,6 @@ HOP_SIZE = int(HOP_SECONDS * SR)      # 240 samples
 def ensure_dir(path):
     """Create output directories if they do not exist."""
     os.makedirs(path, exist_ok=True)
-
-
-def print_progress(prefix, current, total, width=40):
-    """Print a simple terminal progress bar."""
-    if total == 0:
-        return
-    filled = int(width * current / total)
-    bar = "#" * filled + "-" * (width - filled)
-    msg = f"{prefix} |{bar}| {current}/{total}"
-    sys.stdout.write("\r" + msg)
-    sys.stdout.flush()
 
 
 def chunk_audio(waveform):
@@ -89,7 +81,8 @@ def process_input_output(input_root, output_root):
 
     with multiprocessing.Pool(processes=workers) as pool:
         for count, _ in enumerate(pool.imap_unordered(process_file, tasks), start=1):
-            print_progress(os.path.basename(input_root), count, total_files)
+            sys.stdout.write("\r" + bar_line(os.path.basename(input_root), count, total_files))
+            sys.stdout.flush()
 
     sys.stdout.write("\n")
 

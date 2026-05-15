@@ -2,20 +2,11 @@ import concurrent.futures
 import os
 import sys
 
-# Compute the path relative to this script
+from console_bar import bar_line
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TARGET_DIR = os.path.join(BASE_DIR, "data", "chunk_train")
+TARGET_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "data", "chunk_train"))
 NUM_WORKERS = os.cpu_count() or 1
-
-
-def print_progress(current, total, width=40):
-    if total == 0:
-        return
-    filled = int(width * current / total)
-    bar = "#" * filled + "-" * (width - filled)
-    msg = f"Removing |{bar}| {current}/{total}"
-    sys.stdout.write("\r" + msg)
-    sys.stdout.flush()
 
 
 def remove_file(path):
@@ -46,7 +37,8 @@ def remove_tree_with_progress(path):
             futures = [executor.submit(remove_file, file_path) for file_path in files]
             for _ in concurrent.futures.as_completed(futures):
                 current += 1
-                print_progress(current, total)
+                sys.stdout.write("\r" + bar_line("Removing", current, total))
+                sys.stdout.flush()
 
     for dir_path in dirs:
         try:
@@ -54,14 +46,16 @@ def remove_tree_with_progress(path):
         except OSError:
             pass
         current += 1
-        print_progress(current, total)
+        sys.stdout.write("\r" + bar_line("Removing", current, total))
+        sys.stdout.flush()
 
     try:
         os.rmdir(path)
     except OSError:
         pass
     current += 1
-    print_progress(current, total)
+    sys.stdout.write("\r" + bar_line("Removing", current, total))
+    sys.stdout.flush()
     sys.stdout.write("\n")
 
 

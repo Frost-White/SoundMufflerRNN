@@ -1,0 +1,8 @@
+name: GRUChunkDenoiser
+input_shape: (batch, time, 481)
+output_shape: (batch, time, 481)
+freq_bins: 481
+hidden_dim: 128
+gru_num_layers: 3
+num_parameters: 494817
+notes: Sequence of log-magnitude STFT rows per wav chunk; sigmoid mask per time step for magnitude denoising.
