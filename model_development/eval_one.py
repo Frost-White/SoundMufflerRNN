@@ -8,7 +8,6 @@ import random
 import sys
 from datetime import datetime
 
-import librosa
 import numpy as np
 import soundfile as sf
 import torch
@@ -18,9 +17,6 @@ from audio_pipeline import (
     CHUNK_SAMPLES,
     N_FFT,
     SR,
-    STFT_HOP,
-    WINDOW,
-    WIN_LENGTH,
     chunk_waveform,
     load_audio,
     stft_chunks,
@@ -51,28 +47,19 @@ def pick_random_wav_path(noisy_root: str) -> str:
     return random.choice(list(wav_map.values()))
 
 
-def istft_one_chunk(spec_1d: np.ndarray) -> np.ndarray:
-    spec = spec_1d[:, np.newaxis].astype(np.complex64, copy=False)
-    wav = librosa.istft(
-        spec,
-        hop_length=STFT_HOP,
-        win_length=WIN_LENGTH,
-        n_fft=N_FFT,
-        window=WINDOW,
-        center=False,
-        length=CHUNK_SAMPLES,
-    )
-    return wav.astype(np.float32, copy=False)
-
-
-def overlap_add_from_chunks(chunk_signals: np.ndarray) -> np.ndarray:
+def overlap_add_average_from_chunks(chunk_signals: np.ndarray) -> np.ndarray:
     if chunk_signals.shape[0] == 0:
         return np.zeros(0, dtype=np.float32)
-    total = (chunk_signals.shape[0] - 1) * CHUNK_HOP + chunk_signals.shape[1]
+    n_chunks, wlen = chunk_signals.shape
+    total = (n_chunks - 1) * CHUNK_HOP + wlen
     out = np.zeros(total, dtype=np.float32)
-    for i in range(chunk_signals.shape[0]):
+    weight = np.zeros(total, dtype=np.float32)
+    ones = np.ones(wlen, dtype=np.float32)
+    for i in range(n_chunks):
         start = i * CHUNK_HOP
-        out[start : start + chunk_signals.shape[1]] += chunk_signals[i]
+        out[start : start + wlen] += chunk_signals[i]
+        weight[start : start + wlen] += ones
+    out /= np.clip(weight, 1.0, None)
     return out
 
 
@@ -82,9 +69,27 @@ def load_weights(model: GRUChunkDenoiser, weights_path: str, device: torch.devic
     model.load_state_dict(state)
 
 
+def print_compare_metrics(ref: np.ndarray, est: np.ndarray, label: str) -> None:
+    n = min(len(ref), len(est))
+    if n == 0:
+        print(f"{label} metrics: empty")
+        return
+    a = ref[:n].astype(np.float64, copy=False)
+    b = est[:n].astype(np.float64, copy=False)
+    err = a - b
+    mse = float(np.mean(err * err))
+    rmse = float(np.sqrt(mse))
+    snr = float(10.0 * np.log10((np.mean(a * a) + 1e-20) / (mse + 1e-20)))
+    print(
+        f"{label} metrics: aligned={n}  rmse={rmse:.8f}  "
+        f"snr_vs_noisy={snr:.2f}dB  max_abs_diff={float(np.max(np.abs(err))):.6f}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Denoise one random test wav and save output.")
     parser.add_argument("--noisy-root", default=_DEFAULT_NOISY_ROOT)
+    parser.add_argument("--noisy-file", default=None, help="Exact noisy wav path (skip random pick).")
     parser.add_argument("--weights", default=_DEFAULT_WEIGHTS)
     parser.add_argument("--out-dir", default=_DEFAULT_OUT_DIR)
     parser.add_argument("--seed", type=int, default=0)
@@ -116,7 +121,13 @@ def main() -> None:
         print(f"Weights not found: {weights}", file=sys.stderr)
         sys.exit(1)
 
-    noisy_path = pick_random_wav_path(noisy_root)
+    if args.noisy_file:
+        noisy_path = os.path.abspath(args.noisy_file)
+        if not os.path.isfile(noisy_path):
+            print(f"Noisy file not found: {noisy_path}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        noisy_path = pick_random_wav_path(noisy_root)
     noisy_wav, _ = load_audio(noisy_path)
     chunks = chunk_waveform(noisy_wav)
     if chunks.shape[0] == 0:
@@ -152,15 +163,15 @@ def main() -> None:
             f"{float(mask.min()):.4f} / {float(mask.mean()):.4f} / {float(mask.max()):.4f}"
         )
 
-    enhanced_spec = mask * noisy_spec
-    chunk_out = np.stack([istft_one_chunk(enhanced_spec[i]) for i in range(enhanced_spec.shape[0])])
-    wav_out = overlap_add_from_chunks(chunk_out)
+    synth_spec = np.fft.rfft(chunks, n=N_FFT, axis=1).astype(np.complex64, copy=False)
+    enhanced_spec = mask * synth_spec
+    chunk_out = np.fft.irfft(enhanced_spec, n=N_FFT, axis=1).astype(np.float32, copy=False)
+    wav_out = overlap_add_average_from_chunks(chunk_out)
     if len(wav_out) > len(noisy_wav):
         wav_out = wav_out[: len(noisy_wav)]
     elif len(wav_out) < len(noisy_wav):
-        z = np.zeros(len(noisy_wav), dtype=np.float32)
-        z[: len(wav_out)] = wav_out
-        wav_out = z
+        # Preserve non-covered tail from original to avoid zero-padding artifacts.
+        wav_out = np.concatenate([wav_out, noisy_wav[len(wav_out) :].astype(np.float32, copy=False)])
 
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(noisy_path))[0]
@@ -171,6 +182,7 @@ def main() -> None:
     print(f"picked: {noisy_path}")
     print(f"saved:  {out_path}")
     print(f"samples={len(wav_out)} sr={SR} chunks={chunks.shape[0]}")
+    print_compare_metrics(noisy_wav, wav_out, "noisy->out")
 
 
 if __name__ == "__main__":

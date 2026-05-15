@@ -7,7 +7,6 @@ import os
 import random
 import sys
 
-import librosa
 import numpy as np
 import soundfile as sf
 import torch
@@ -17,9 +16,6 @@ from audio_pipeline import (
     CHUNK_SAMPLES,
     N_FFT,
     SR,
-    STFT_HOP,
-    WINDOW,
-    WIN_LENGTH,
     chunk_waveform,
     load_audio,
     stft_chunks,
@@ -50,29 +46,19 @@ def find_clean_twin(clean_root: str, basename: str) -> str | None:
     return m.get(basename)
 
 
-def istft_one_chunk(spec_1d: np.ndarray) -> np.ndarray:
-    S = spec_1d[:, np.newaxis].astype(np.complex64, copy=False)
-    y = librosa.istft(
-        S,
-        hop_length=STFT_HOP,
-        win_length=WIN_LENGTH,
-        n_fft=N_FFT,
-        window=WINDOW,
-        center=False,
-        length=CHUNK_SAMPLES,
-    )
-    return y.astype(np.float32, copy=False)
-
-
-def overlap_add_from_chunks(chunk_signals: np.ndarray) -> np.ndarray:
+def overlap_add_average_from_chunks(chunk_signals: np.ndarray) -> np.ndarray:
     n, wlen = chunk_signals.shape
     if n == 0:
         return np.zeros(0, dtype=np.float32)
     total = (n - 1) * CHUNK_HOP + wlen
     out = np.zeros(total, dtype=np.float32)
+    weight = np.zeros(total, dtype=np.float32)
+    ones = np.ones(wlen, dtype=np.float32)
     for i in range(n):
         start = i * CHUNK_HOP
         out[start : start + wlen] += chunk_signals[i]
+        weight[start : start + wlen] += ones
+    out /= np.clip(weight, 1.0, None)
     return out
 
 
@@ -135,23 +121,23 @@ def main() -> None:
     model = GRUChunkDenoiser(hidden_dim=args.hidden_dim, num_layers=args.gru_layers)
     if args.weights:
         state = torch.load(args.weights, map_location="cpu")
+        if isinstance(state, dict) and "model_state" in state:
+            state = state["model_state"]
         model.load_state_dict(state)
     model.eval()
     with torch.no_grad():
         mask = model(x, lengths)
 
     mask_np = mask.squeeze(0).cpu().numpy()
-    enhanced_spec = mask_np * spectra
-
-    chunk_out = np.stack([istft_one_chunk(enhanced_spec[i]) for i in range(enhanced_spec.shape[0])])
-    wav_out = overlap_add_from_chunks(chunk_out)
+    synth_spec = np.fft.rfft(chunks, n=N_FFT, axis=1).astype(np.complex64, copy=False)
+    enhanced_spec = mask_np * synth_spec
+    chunk_out = np.fft.irfft(enhanced_spec, n=N_FFT, axis=1).astype(np.float32, copy=False)
+    wav_out = overlap_add_average_from_chunks(chunk_out)
     n_orig = len(noisy_wav)
     if len(wav_out) > n_orig:
         wav_out = wav_out[:n_orig]
     elif len(wav_out) < n_orig:
-        z = np.zeros(n_orig, dtype=np.float32)
-        z[: len(wav_out)] = wav_out
-        wav_out = z
+        wav_out = np.concatenate([wav_out, noisy_wav[len(wav_out) :].astype(np.float32, copy=False)])
 
     stem = os.path.splitext(base)[0]
     out_path = (
