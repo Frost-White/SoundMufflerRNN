@@ -10,10 +10,10 @@ import sys
 import torch
 from torch.utils.data import DataLoader
 
-from model import FREQ_BINS, GRUChunkDenoiser, model_info
-from run_artifacts import resolve_run_dir, write_model_info_txt
-from training_data import collate_padded_utterances, prepare_train_val_datasets
-from training_loop import run_training_loop
+from core.model import FREQ_BINS, GRUChunkDenoiser, model_info
+from training.artifacts import resolve_run_dir, write_model_info_txt
+from training.data import collate_padded_utterances, prepare_train_val_datasets
+from training.loop import run_training_loop
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _RUNS_ROOT = os.path.join(_BASE, "runs")
@@ -29,13 +29,18 @@ HYPERPARAMS = {
     "hidden_dim": 128,
     "gru_num_layers": 3,
     "gru_dropout": 0.05,
-    "epochs": 25,
+    "epochs": 30,
     "batch_size": 16,
-    "lr": 1e-3,
-    "workers": 2,
+    "lr": 1e-5,
+    "workers": 0,
     "seed": 0,
     "device": "cuda",
     "log_eps": 1e-8,
+    "loss_log_eps": 1e-8,
+    "w_log_mag": 1.0,
+    "w_linear_mag": 0.05,
+    "w_mrstft": 0.05,
+    "mrstft_resolutions": [[240, 240, 60], [480, 480, 120], [960, 960, 240]],
 }
 HYPERPARAMS["run_tag"] = (
     f"gru_h{HYPERPARAMS['hidden_dim']}_L{HYPERPARAMS['gru_num_layers']}"

@@ -11,10 +11,10 @@ import sys
 import soundfile as sf
 import torch
 
-from audio_pipeline import SR, load_audio
+from core.audio import SR, load_audio
 from eval import _enhance_waveform
 from eval_one import load_weights
-from model import GRUChunkDenoiser
+from core.model import GRUChunkDenoiser
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_METRICS_CSV = os.path.join(_BASE, "eval_outputs", "metrics_eval.csv")
@@ -22,7 +22,7 @@ _DEFAULT_WEIGHTS = os.path.normpath(
     os.path.join(
         _BASE,
         "runs",
-        "20260514_231036_gru_h128_L3_bs16_lr0.001",
+        "20260519_231544_gru_h128_L3_bs16_lr1e-05",
         "best_weights.pt",
     )
 )

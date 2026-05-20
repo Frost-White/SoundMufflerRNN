@@ -11,17 +11,13 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from audio_pipeline import (
-    CHUNK_HOP,
-    CHUNK_SAMPLES,
-    N_FFT,
+from core.audio import (
     SR,
-    chunk_waveform,
     load_audio,
-    stft_chunks,
 )
-from model import FREQ_BINS, GRUChunkDenoiser
-from training_data import scan_wavs_by_basename
+from core.model import FREQ_BINS, GRUChunkDenoiser
+from eval_one import enhance_waveform
+from training.data import scan_wavs_by_basename
 
 _LOG_EPS = 1e-8
 
@@ -46,22 +42,6 @@ def find_clean_twin(clean_root: str, basename: str) -> str | None:
     return m.get(basename)
 
 
-def overlap_add_average_from_chunks(chunk_signals: np.ndarray) -> np.ndarray:
-    n, wlen = chunk_signals.shape
-    if n == 0:
-        return np.zeros(0, dtype=np.float32)
-    total = (n - 1) * CHUNK_HOP + wlen
-    out = np.zeros(total, dtype=np.float32)
-    weight = np.zeros(total, dtype=np.float32)
-    ones = np.ones(wlen, dtype=np.float32)
-    for i in range(n):
-        start = i * CHUNK_HOP
-        out[start : start + wlen] += chunk_signals[i]
-        weight[start : start + wlen] += ones
-    out /= np.clip(weight, 1.0, None)
-    return out
-
-
 def main() -> None:
     p = argparse.ArgumentParser(description="One wav STFT + GRUChunkDenoiser forward.")
     p.add_argument("--noisy-root", default=_DEFAULT_NOISY)
@@ -70,6 +50,11 @@ def main() -> None:
     p.add_argument("--weights", default=None, help="Optional .pt state_dict from training.")
     p.add_argument("--hidden-dim", type=int, default=256)
     p.add_argument("--gru-layers", type=int, default=1)
+    p.add_argument(
+        "--identity-mask",
+        action="store_true",
+        help="Bypass model and use an all-ones mask for reconstruction sanity checks.",
+    )
     p.add_argument("--seed", type=int, default=None)
     p.add_argument(
         "--out",
@@ -104,40 +89,31 @@ def main() -> None:
     print(f"clean:  {clean_path}")
 
     noisy_wav, _ = load_audio(noisy_path)
-    chunks = chunk_waveform(noisy_wav)
-    spectra = stft_chunks(chunks)
-    if spectra.shape[0] == 0:
+    if len(noisy_wav) == 0:
         print("No STFT chunks (audio shorter than one chunk).", file=sys.stderr)
         sys.exit(1)
-    mag = np.abs(spectra)
-    log_mag = np.log(mag + _LOG_EPS).astype(np.float32)
 
-    print(f"chunks={chunks.shape[0]}  stft={tuple(spectra.shape)}  freq_bins={FREQ_BINS}")
-
-    T = log_mag.shape[0]
-    x = torch.from_numpy(log_mag).unsqueeze(0)
-    lengths = torch.tensor([T], dtype=torch.long)
-
-    model = GRUChunkDenoiser(hidden_dim=args.hidden_dim, num_layers=args.gru_layers)
-    if args.weights:
+    model: GRUChunkDenoiser | None = None
+    if not args.identity_mask:
+        model = GRUChunkDenoiser(hidden_dim=args.hidden_dim, num_layers=args.gru_layers)
+    if args.weights and model is not None:
         state = torch.load(args.weights, map_location="cpu")
         if isinstance(state, dict) and "model_state" in state:
             state = state["model_state"]
         model.load_state_dict(state)
-    model.eval()
-    with torch.no_grad():
-        mask = model(x, lengths)
-
-    mask_np = mask.squeeze(0).cpu().numpy()
-    synth_spec = np.fft.rfft(chunks, n=N_FFT, axis=1).astype(np.complex64, copy=False)
-    enhanced_spec = mask_np * synth_spec
-    chunk_out = np.fft.irfft(enhanced_spec, n=N_FFT, axis=1).astype(np.float32, copy=False)
-    wav_out = overlap_add_average_from_chunks(chunk_out)
-    n_orig = len(noisy_wav)
-    if len(wav_out) > n_orig:
-        wav_out = wav_out[:n_orig]
-    elif len(wav_out) < n_orig:
-        wav_out = np.concatenate([wav_out, noisy_wav[len(wav_out) :].astype(np.float32, copy=False)])
+    if model is not None:
+        model.eval()
+    wav_out, mask_np = enhance_waveform(
+        noisy_wav,
+        model,
+        torch.device("cpu"),
+        _LOG_EPS,
+        identity_mask=args.identity_mask,
+    )
+    if mask_np.size == 0:
+        print("No STFT chunks (audio shorter than one chunk).", file=sys.stderr)
+        sys.exit(1)
+    print(f"chunks={mask_np.shape[0]}  stft=({mask_np.shape[0]}, {FREQ_BINS})  freq_bins={FREQ_BINS}")
 
     stem = os.path.splitext(base)[0]
     out_path = (
@@ -150,10 +126,10 @@ def main() -> None:
         os.makedirs(out_dir, exist_ok=True)
     sf.write(out_path, wav_out, SR, subtype="PCM_16")
 
-    print(f"model in  {tuple(x.shape)}  ->  out {tuple(mask.shape)}")
+    print(f"model in  (1, {mask_np.shape[0]}, {FREQ_BINS})  ->  out (1, {mask_np.shape[0]}, {FREQ_BINS})")
     print(
-        f"mask min/mean/max: {mask.min().item():.4f} / "
-        f"{mask.mean().item():.4f} / {mask.max().item():.4f}"
+        f"mask min/mean/max: {float(mask_np.min()):.4f} / "
+        f"{float(mask_np.mean()):.4f} / {float(mask_np.max()):.4f}"
     )
     print(f"saved: {out_path}  samples={len(wav_out)}  sr={SR}")
 

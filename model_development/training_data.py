@@ -12,16 +12,24 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
-from audio_pipeline import chunk_waveform, load_audio, stft_chunks
-from io_progress import endline, tick
+from core.audio import chunk_waveform, load_audio, stft_chunks
+from utils.progress import endline, tick
 
 
 def scan_wavs_by_basename(root: str) -> dict[str, str]:
     out: dict[str, str] = {}
+    dup_count = 0
     for cur, _, names in os.walk(root):
         for name in names:
             if name.lower().endswith(".wav"):
+                if name in out:
+                    dup_count += 1
                 out[name] = os.path.join(cur, name)
+    if dup_count:
+        print(
+            f"[warn] {root}: {dup_count} duplicate basename(s) detected; last path wins.",
+            file=sys.stderr,
+        )
     return out
 
 
@@ -45,12 +53,12 @@ def collect_pairs(
 def preload_stft_mag_pairs(
     pairs: list[tuple[str, str]],
     label: str = "preload",
-) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
-    """Per pair: (mag_noisy[T,F], mag_clean[T,F]) float32, T = num chunks."""
+) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Per pair: (mag_noisy[T,F], mag_clean[T,F], noisy_chunks[T,S], clean_chunks[T,S])."""
     total = len(pairs)
     if total:
         print(f"[{label}] {total} çift için |STFT| magnitüdleri RAM'e hazırlanıyor...")
-    feats: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    feats: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
     for i, (noisy_path, clean_path) in enumerate(pairs, start=1):
         try:
             nw, _ = load_audio(noisy_path)
@@ -67,7 +75,9 @@ def preload_stft_mag_pairs(
             continue
         mag_n = np.abs(stft_chunks(chunks_n)).astype(np.float32, copy=False)
         mag_c = np.abs(stft_chunks(chunks_c)).astype(np.float32, copy=False)
-        feats[(noisy_path, clean_path)] = (mag_n, mag_c)
+        chunks_n = np.ascontiguousarray(chunks_n.astype(np.float32, copy=False))
+        chunks_c = np.ascontiguousarray(chunks_c.astype(np.float32, copy=False))
+        feats[(noisy_path, clean_path)] = (mag_n, mag_c, chunks_n, chunks_c)
         tick(label, i, total)
     if total:
         endline()
@@ -80,7 +90,7 @@ class UtteranceMagDataset(Dataset):
     def __init__(
         self,
         pair_keys: list[tuple[str, str]],
-        feats: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]],
+        feats: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
         log_eps: float,
     ):
         self._keys = [k for k in pair_keys if k in feats]
@@ -92,12 +102,14 @@ class UtteranceMagDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         key = self._keys[idx]
-        mn, mc = self._feats[key]
+        mn, mc, chunks_n, chunks_c = self._feats[key]
         x = np.log(mn + self._log_eps).astype(np.float32, copy=False)
         return {
             "x": torch.from_numpy(x),
             "mag_noisy": torch.from_numpy(np.ascontiguousarray(mn)),
             "mag_clean": torch.from_numpy(np.ascontiguousarray(mc)),
+            "chunks_noisy": torch.from_numpy(chunks_n),
+            "chunks_clean": torch.from_numpy(chunks_c),
         }
 
 
@@ -108,7 +120,16 @@ def collate_padded_utterances(
     x = pad_sequence([s["x"] for s in samples], batch_first=True)
     mag_n = pad_sequence([s["mag_noisy"] for s in samples], batch_first=True)
     mag_c = pad_sequence([s["mag_clean"] for s in samples], batch_first=True)
-    return {"x": x, "mag_noisy": mag_n, "mag_clean": mag_c, "lengths": lengths}
+    chunks_n = pad_sequence([s["chunks_noisy"] for s in samples], batch_first=True)
+    chunks_c = pad_sequence([s["chunks_clean"] for s in samples], batch_first=True)
+    return {
+        "x": x,
+        "mag_noisy": mag_n,
+        "mag_clean": mag_c,
+        "chunks_noisy": chunks_n,
+        "chunks_clean": chunks_c,
+        "lengths": lengths,
+    }
 
 
 def prepare_train_val_datasets(

@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from torch.nn import Module
 
-from model import model_info
+from core.model import model_info
 
 
 def utc_now_iso() -> str:
@@ -53,19 +53,19 @@ def write_run_plots(out_dir: str, epoch_records: list[dict]) -> None:
     if not epoch_records:
         return
     epochs = [int(r["epoch"]) for r in epoch_records]
-    train = [r.get("train_mse", r.get("train_loss")) for r in epoch_records]
-    val = [r.get("val_mse", r.get("val_loss")) for r in epoch_records]
+    train = [r.get("train_log_mag_mse", r.get("train_mse", r.get("train_loss"))) for r in epoch_records]
+    val = [r.get("val_log_mag_mse", r.get("val_mse", r.get("val_loss"))) for r in epoch_records]
     snr_db = [r.get("val_snr_gain_db") for r in epoch_records]
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(epochs, train, label="train MSE")
+    ax.plot(epochs, train, label="train log-mag MSE")
     val_xy = [(e, v) for e, v in zip(epochs, val) if isinstance(v, (int, float)) and math.isfinite(v)]
     if val_xy:
         ex, vx = zip(*val_xy)
-        ax.plot(ex, vx, label="val MSE")
+        ax.plot(ex, vx, label="val log-mag MSE")
     ax.set_xlabel("epoch")
-    ax.set_ylabel("MSE")
-    ax.set_title("Loss")
+    ax.set_ylabel("log-mag MSE")
+    ax.set_title("Primary Loss")
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -97,7 +97,19 @@ def write_run_plots(out_dir: str, epoch_records: list[dict]) -> None:
 
 
 def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
-    fieldnames = ["epoch", "train_loss", "val_loss", "val_snr_gain_db", "epoch_time_s"]
+    fieldnames = [
+        "epoch",
+        "train_linear_mag_mse",
+        "train_log_mag_mse",
+        "train_mrstft",
+        "train_total",
+        "val_linear_mag_mse",
+        "val_log_mag_mse",
+        "val_mrstft",
+        "val_total",
+        "val_snr_gain_db",
+        "epoch_time_s",
+    ]
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -105,8 +117,22 @@ def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
             w.writerow(
                 {
                     "epoch": r["epoch"],
-                    "train_loss": _csv_metric_float(r.get("train_mse", r.get("train_loss"))),
-                    "val_loss": _csv_metric_float(r.get("val_mse", r.get("val_loss"))),
+                    "train_linear_mag_mse": _csv_metric_float(
+                        r.get("train_linear_mag_mse", r.get("train_mse", r.get("train_loss")))
+                    ),
+                    "train_log_mag_mse": _csv_metric_float(
+                        r.get("train_log_mag_mse", r.get("train_mse", r.get("train_loss")))
+                    ),
+                    "train_mrstft": _csv_metric_float(r.get("train_mrstft", r.get("train_mss"))),
+                    "train_total": _csv_metric_float(r.get("train_total")),
+                    "val_linear_mag_mse": _csv_metric_float(
+                        r.get("val_linear_mag_mse", r.get("val_mse", r.get("val_loss")))
+                    ),
+                    "val_log_mag_mse": _csv_metric_float(
+                        r.get("val_log_mag_mse", r.get("val_mse", r.get("val_loss")))
+                    ),
+                    "val_mrstft": _csv_metric_float(r.get("val_mrstft", r.get("val_mss"))),
+                    "val_total": _csv_metric_float(r.get("val_total")),
                     "val_snr_gain_db": _csv_metric_float(r.get("val_snr_gain_db")),
                     "epoch_time_s": r.get("epoch_sec", r.get("epoch_time_s", "")),
                 }

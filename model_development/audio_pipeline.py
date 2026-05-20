@@ -3,9 +3,10 @@
 import os
 from typing import Tuple
 
+import librosa
 import numpy as np
 import soundfile as sf
-import librosa
+import torch
 
 SR             = 48000
 CHUNK_SAMPLES  = 960                                # 20 ms @ 48 kHz
@@ -65,25 +66,182 @@ def stft_chunk(
     window: str = WINDOW,
 ) -> np.ndarray:
     """Single-chunk STFT, returns (n_fft//2+1, num_frames) complex array."""
-    return librosa.stft(
-        chunk.astype(np.float32, copy=False),
+    spec = analysis_stft_chunks(
+        np.ascontiguousarray(chunk.astype(np.float32, copy=False))[None, :],
         n_fft=n_fft,
         hop_length=hop_length,
         win_length=win_length,
         window=window,
         center=False,
     )
+    return spec[0][:, None]
+
+
+def _hann_window_torch(win_length: int, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    # Use a single window definition in both analysis and synthesis.
+    return torch.hann_window(win_length, periodic=True, dtype=dtype, device=device)
+
+
+def _hann_window_np(win_length: int) -> np.ndarray:
+    return _hann_window_torch(win_length, dtype=torch.float32, device=torch.device("cpu")).cpu().numpy()
+
+
+def analysis_stft_chunks_torch(
+    chunks: torch.Tensor,
+    n_fft: int = N_FFT,
+    hop_length: int = STFT_HOP,
+    win_length: int = WIN_LENGTH,
+    window: str = WINDOW,
+    center: bool = False,
+) -> torch.Tensor:
+    """Analyze chunks into one-frame complex STFT bins: (num_chunks, n_fft//2+1)."""
+    if chunks.numel() == 0:
+        return torch.empty((0, n_fft // 2 + 1), dtype=torch.complex64, device=chunks.device)
+    if chunks.ndim != 2:
+        raise ValueError(f"Expected (num_chunks, chunk_samples), got {tuple(chunks.shape)}")
+
+    x = chunks.to(dtype=torch.float32)
+    if window == "hann":
+        win = _hann_window_torch(win_length, dtype=x.dtype, device=x.device)
+    else:
+        raise ValueError(f"Unsupported window: {window}")
+    spec = torch.stft(
+        x,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        window=win,
+        center=center,
+        return_complex=True,
+    )
+    if spec.shape[-1] != 1:
+        raise ValueError(f"Expected single STFT frame per chunk, got {spec.shape}")
+    return spec[..., 0]
+
+
+def analysis_stft_chunks(
+    chunks: np.ndarray,
+    n_fft: int = N_FFT,
+    hop_length: int = STFT_HOP,
+    win_length: int = WIN_LENGTH,
+    window: str = WINDOW,
+    center: bool = False,
+) -> np.ndarray:
+    """Analyze chunks into one-frame complex STFT bins: (num_chunks, n_fft//2+1)."""
+    if chunks.size == 0:
+        return np.empty((0, n_fft // 2 + 1), dtype=np.complex64)
+    if chunks.ndim != 2:
+        raise ValueError(f"Expected (num_chunks, chunk_samples), got {chunks.shape}")
+
+    x = torch.from_numpy(np.ascontiguousarray(chunks.astype(np.float32, copy=False)))
+    spec = analysis_stft_chunks_torch(
+        x,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        window=window,
+        center=center,
+    )
+    return spec.cpu().numpy().astype(np.complex64, copy=False)
+
+
+def synthesis_istft_chunks_torch(
+    spectra: torch.Tensor,
+    n_fft: int = N_FFT,
+    hop_length: int = STFT_HOP,
+    win_length: int = WIN_LENGTH,
+    window: str = WINDOW,
+    center: bool = False,
+    length: int = CHUNK_SAMPLES,
+) -> torch.Tensor:
+    """
+    Synthesize chunk signals from one-frame complex STFT bins: (num_chunks, chunk_samples).
+
+    This returns a stable, windowed reconstruction. Final waveform normalization
+    should be handled in overlap-add using the same synthesis window.
+    """
+    if spectra.numel() == 0:
+        return torch.zeros((0, length), dtype=torch.float32, device=spectra.device)
+    if spectra.ndim != 2:
+        raise ValueError(f"Expected (num_chunks, freq_bins), got {tuple(spectra.shape)}")
+    if spectra.shape[1] != n_fft // 2 + 1:
+        raise ValueError(f"Unexpected freq bins: {spectra.shape[1]} (expected {n_fft // 2 + 1})")
+
+    half = spectra.to(dtype=torch.complex64)
+    mirrored = torch.conj(torch.flip(half[:, 1:-1], dims=[1]))
+    full = torch.cat([half, mirrored], dim=1)
+    chunks_windowed = torch.fft.ifft(full, n=n_fft, dim=1).real.to(dtype=torch.float32)
+    return chunks_windowed[:, :length]
+
+
+def synthesis_istft_chunks(
+    spectra: np.ndarray,
+    n_fft: int = N_FFT,
+    hop_length: int = STFT_HOP,
+    win_length: int = WIN_LENGTH,
+    window: str = WINDOW,
+    center: bool = False,
+    length: int = CHUNK_SAMPLES,
+) -> np.ndarray:
+    """Synthesize chunk waveforms from one-frame complex STFT bins: (num_chunks, chunk_samples)."""
+    if spectra.size == 0:
+        return np.zeros((0, length), dtype=np.float32)
+    if spectra.ndim != 2:
+        raise ValueError(f"Expected (num_chunks, freq_bins), got {spectra.shape}")
+
+    if window != "hann":
+        raise ValueError(f"Unsupported window: {window}")
+    if win_length != n_fft:
+        raise ValueError("synthesis_istft_chunks currently expects win_length == n_fft")
+
+    half = torch.from_numpy(np.ascontiguousarray(spectra.astype(np.complex64, copy=False)))
+    chunks = synthesis_istft_chunks_torch(
+        half,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        window=window,
+        center=center,
+        length=length,
+    )
+    return np.ascontiguousarray(chunks.cpu().numpy().astype(np.float32, copy=False))
+
+
+def overlap_add_average(
+    chunks: np.ndarray,
+    hop: int = CHUNK_HOP,
+    *,
+    synthesis_window: str = WINDOW,
+    win_length: int = CHUNK_SAMPLES,
+) -> np.ndarray:
+    """Overlap-add chunks with window-aware normalization."""
+    if chunks.shape[0] == 0:
+        return np.zeros(0, dtype=np.float32)
+    n_chunks, wlen = chunks.shape
+    total = (n_chunks - 1) * hop + wlen
+    out = np.zeros(total, dtype=np.float32)
+    weight = np.zeros(total, dtype=np.float32)
+    if synthesis_window == "hann":
+        win = _hann_window_np(win_length)
+    else:
+        raise ValueError(f"Unsupported window: {synthesis_window}")
+    win = win[:wlen]
+    for i in range(n_chunks):
+        start = i * hop
+        out[start : start + wlen] += chunks[i]
+        weight[start : start + wlen] += win
+    # Guard boundary regions where Hann weight is ~0 to avoid blow-ups
+    # when masked spectra produce non-zero edge samples.
+    min_weight = 1e-3
+    stable = weight >= min_weight
+    out[stable] /= weight[stable]
+    out[~stable] = 0.0
+    return out
 
 
 def stft_chunks(chunks: np.ndarray, **kwargs) -> np.ndarray:
     """Per-chunk STFT stacked as (num_chunks, freq_bins) when each chunk yields 1 frame."""
-    if chunks.size == 0:
-        return np.empty((0, N_FFT // 2 + 1), dtype=np.complex64)
-    spectra = [stft_chunk(c, **kwargs) for c in chunks]
-    stacked = np.stack(spectra, axis=0)            # (num_chunks, freq, frames)
-    if stacked.shape[-1] == 1:
-        stacked = stacked[..., 0]                  # squeeze single-frame axis
-    return stacked.astype(np.complex64, copy=False)
+    return analysis_stft_chunks(chunks, **kwargs)
 
 
 def describe_signal(path: str, audio: np.ndarray, sr: int) -> None:

@@ -12,17 +12,16 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from audio_pipeline import (
-    CHUNK_HOP,
-    CHUNK_SAMPLES,
-    N_FFT,
+from core.audio import (
     SR,
+    analysis_stft_chunks,
     chunk_waveform,
     load_audio,
-    stft_chunks,
+    overlap_add_average,
+    synthesis_istft_chunks,
 )
-from model import GRUChunkDenoiser
-from training_data import scan_wavs_by_basename
+from core.model import GRUChunkDenoiser
+from training.data import scan_wavs_by_basename
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_NOISY_ROOT = os.path.normpath(
@@ -47,43 +46,64 @@ def pick_random_wav_path(noisy_root: str) -> str:
     return random.choice(list(wav_map.values()))
 
 
-def overlap_add_average_from_chunks(chunk_signals: np.ndarray) -> np.ndarray:
-    if chunk_signals.shape[0] == 0:
-        return np.zeros(0, dtype=np.float32)
-    n_chunks, wlen = chunk_signals.shape
-    total = (n_chunks - 1) * CHUNK_HOP + wlen
-    out = np.zeros(total, dtype=np.float32)
-    weight = np.zeros(total, dtype=np.float32)
-    ones = np.ones(wlen, dtype=np.float32)
-    for i in range(n_chunks):
-        start = i * CHUNK_HOP
-        out[start : start + wlen] += chunk_signals[i]
-        weight[start : start + wlen] += ones
-    out /= np.clip(weight, 1.0, None)
-    return out
-
-
 def load_weights(model: GRUChunkDenoiser, weights_path: str, device: torch.device) -> None:
     obj = torch.load(weights_path, map_location=device)
     state = obj["model_state"] if isinstance(obj, dict) and "model_state" in obj else obj
     model.load_state_dict(state)
 
 
+def enhance_waveform(
+    noisy_wav: np.ndarray,
+    model: GRUChunkDenoiser | None,
+    device: torch.device,
+    log_eps: float,
+    *,
+    identity_mask: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    chunks = chunk_waveform(noisy_wav)
+    if chunks.shape[0] == 0:
+        return np.zeros(0, dtype=np.float32), np.zeros((0, 0), dtype=np.float32)
+
+    noisy_spec = analysis_stft_chunks(chunks)
+    mag = np.abs(noisy_spec)
+    if identity_mask:
+        mask = np.ones_like(mag, dtype=np.float32)
+    else:
+        if model is None:
+            raise ValueError("model is required when identity_mask=False")
+        x_np = np.log(mag + log_eps).astype(np.float32, copy=False)
+        x = torch.from_numpy(x_np).unsqueeze(0).to(device)
+        lengths = torch.tensor([x_np.shape[0]], dtype=torch.long)
+        with torch.no_grad():
+            mask = model(x, lengths).squeeze(0).cpu().numpy()
+
+    enhanced_spec = mask * noisy_spec
+    chunk_out = synthesis_istft_chunks(enhanced_spec)
+    wav_out = overlap_add_average(chunk_out)
+    if len(wav_out) > len(noisy_wav):
+        wav_out = wav_out[: len(noisy_wav)]
+    elif len(wav_out) < len(noisy_wav):
+        wav_out = np.concatenate([wav_out, noisy_wav[len(wav_out) :].astype(np.float32, copy=False)])
+    return wav_out, mask
+
+
 def print_compare_metrics(ref: np.ndarray, est: np.ndarray, label: str) -> None:
     n = min(len(ref), len(est))
     if n == 0:
         print(f"{label} metrics: empty")
-        return
+        return {"aligned": 0, "rmse": float("nan"), "snr_db": float("nan"), "max_abs_diff": float("nan")}
     a = ref[:n].astype(np.float64, copy=False)
     b = est[:n].astype(np.float64, copy=False)
     err = a - b
     mse = float(np.mean(err * err))
     rmse = float(np.sqrt(mse))
     snr = float(10.0 * np.log10((np.mean(a * a) + 1e-20) / (mse + 1e-20)))
+    max_abs = float(np.max(np.abs(err)))
     print(
         f"{label} metrics: aligned={n}  rmse={rmse:.8f}  "
-        f"snr_vs_noisy={snr:.2f}dB  max_abs_diff={float(np.max(np.abs(err))):.6f}"
+        f"snr_vs_noisy={snr:.2f}dB  max_abs_diff={max_abs:.6f}"
     )
+    return {"aligned": n, "rmse": rmse, "snr_db": snr, "max_abs_diff": max_abs}
 
 
 def main() -> None:
@@ -105,6 +125,18 @@ def main() -> None:
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
+    parser.add_argument(
+        "--gate-rmse-max",
+        type=float,
+        default=None,
+        help="Optional fail threshold for noisy->out RMSE (lower is better).",
+    )
+    parser.add_argument(
+        "--gate-peak-ratio-max",
+        type=float,
+        default=None,
+        help="Optional fail threshold for max(|out|)/max(|noisy|).",
+    )
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -117,7 +149,7 @@ def main() -> None:
     if not os.path.isdir(noisy_root):
         print(f"Noisy root not found: {noisy_root}", file=sys.stderr)
         sys.exit(1)
-    if not os.path.isfile(weights):
+    if not args.identity_mask and not os.path.isfile(weights):
         print(f"Weights not found: {weights}", file=sys.stderr)
         sys.exit(1)
 
@@ -129,16 +161,18 @@ def main() -> None:
     else:
         noisy_path = pick_random_wav_path(noisy_root)
     noisy_wav, _ = load_audio(noisy_path)
-    chunks = chunk_waveform(noisy_wav)
-    if chunks.shape[0] == 0:
+    if chunk_waveform(noisy_wav).shape[0] == 0:
         print("Audio shorter than one chunk.", file=sys.stderr)
         sys.exit(1)
-    noisy_spec = stft_chunks(chunks)
-    mag = np.abs(noisy_spec)
-    x_np = np.log(mag + args.log_eps).astype(np.float32)
 
     if args.identity_mask:
-        mask = np.ones_like(mag, dtype=np.float32)
+        wav_out, mask = enhance_waveform(
+            noisy_wav,
+            model=None,
+            device=torch.device("cpu"),
+            log_eps=args.log_eps,
+            identity_mask=True,
+        )
         print("mask mode: identity (all ones)")
         print(
             "mask min/mean/max: "
@@ -149,11 +183,7 @@ def main() -> None:
         model = GRUChunkDenoiser(hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
         load_weights(model, weights, device)
         model.eval()
-
-        x = torch.from_numpy(x_np).unsqueeze(0).to(device)
-        lengths = torch.tensor([x_np.shape[0]], dtype=torch.long)
-        with torch.no_grad():
-            mask = model(x, lengths).squeeze(0).cpu().numpy()
+        wav_out, mask = enhance_waveform(noisy_wav, model, device, args.log_eps)
         print(
             "mask mode: model"
             f" ({os.path.basename(weights)})"
@@ -163,16 +193,6 @@ def main() -> None:
             f"{float(mask.min()):.4f} / {float(mask.mean()):.4f} / {float(mask.max()):.4f}"
         )
 
-    synth_spec = np.fft.rfft(chunks, n=N_FFT, axis=1).astype(np.complex64, copy=False)
-    enhanced_spec = mask * synth_spec
-    chunk_out = np.fft.irfft(enhanced_spec, n=N_FFT, axis=1).astype(np.float32, copy=False)
-    wav_out = overlap_add_average_from_chunks(chunk_out)
-    if len(wav_out) > len(noisy_wav):
-        wav_out = wav_out[: len(noisy_wav)]
-    elif len(wav_out) < len(noisy_wav):
-        # Preserve non-covered tail from original to avoid zero-padding artifacts.
-        wav_out = np.concatenate([wav_out, noisy_wav[len(wav_out) :].astype(np.float32, copy=False)])
-
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(noisy_path))[0]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -181,8 +201,26 @@ def main() -> None:
 
     print(f"picked: {noisy_path}")
     print(f"saved:  {out_path}")
-    print(f"samples={len(wav_out)} sr={SR} chunks={chunks.shape[0]}")
-    print_compare_metrics(noisy_wav, wav_out, "noisy->out")
+    print(f"samples={len(wav_out)} sr={SR} chunks={mask.shape[0]}")
+    stats = print_compare_metrics(noisy_wav, wav_out, "noisy->out")
+
+    gate_failed = False
+    peak_ratio = float(np.max(np.abs(wav_out)) / (np.max(np.abs(noisy_wav)) + 1e-12))
+    print(f"peak_ratio={peak_ratio:.6f}")
+    if args.gate_rmse_max is not None and stats["rmse"] > args.gate_rmse_max:
+        gate_failed = True
+        print(
+            f"[gate-fail] rmse={stats['rmse']:.8f} exceeds gate_rmse_max={args.gate_rmse_max:.8f}",
+            file=sys.stderr,
+        )
+    if args.gate_peak_ratio_max is not None and peak_ratio > args.gate_peak_ratio_max:
+        gate_failed = True
+        print(
+            f"[gate-fail] peak_ratio={peak_ratio:.6f} exceeds gate_peak_ratio_max={args.gate_peak_ratio_max:.6f}",
+            file=sys.stderr,
+        )
+    if gate_failed:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
