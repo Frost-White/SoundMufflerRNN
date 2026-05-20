@@ -7,7 +7,6 @@ import os
 import random
 import sys
 
-import numpy as np
 import soundfile as sf
 import torch
 
@@ -109,6 +108,10 @@ def main() -> None:
         torch.device("cpu"),
         _LOG_EPS,
         identity_mask=args.identity_mask,
+        preserve_input_tail=False,
+        pad_end_for_chunking=True,
+        ola_min_weight=0.0,
+        boundary_pad_samples=240,
     )
     if mask_np.size == 0:
         print("No STFT chunks (audio shorter than one chunk).", file=sys.stderr)

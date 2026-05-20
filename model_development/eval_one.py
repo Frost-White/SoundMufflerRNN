@@ -59,8 +59,16 @@ def enhance_waveform(
     log_eps: float,
     *,
     identity_mask: bool = False,
+    preserve_input_tail: bool = True,
+    pad_end_for_chunking: bool = False,
+    ola_min_weight: float = 1e-3,
+    boundary_pad_samples: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    chunks = chunk_waveform(noisy_wav)
+    work_wav = noisy_wav.astype(np.float32, copy=False)
+    if boundary_pad_samples > 0:
+        work_wav = np.pad(work_wav, (boundary_pad_samples, boundary_pad_samples))
+
+    chunks = chunk_waveform(work_wav, pad_end=pad_end_for_chunking)
     if chunks.shape[0] == 0:
         return np.zeros(0, dtype=np.float32), np.zeros((0, 0), dtype=np.float32)
 
@@ -79,11 +87,16 @@ def enhance_waveform(
 
     enhanced_spec = mask * noisy_spec
     chunk_out = synthesis_istft_chunks(enhanced_spec)
-    wav_out = overlap_add_average(chunk_out)
-    if len(wav_out) > len(noisy_wav):
-        wav_out = wav_out[: len(noisy_wav)]
-    elif len(wav_out) < len(noisy_wav):
-        wav_out = np.concatenate([wav_out, noisy_wav[len(wav_out) :].astype(np.float32, copy=False)])
+    wav_out = overlap_add_average(chunk_out, min_weight=ola_min_weight)
+    if len(wav_out) > len(work_wav):
+        wav_out = wav_out[: len(work_wav)]
+    elif len(wav_out) < len(work_wav) and preserve_input_tail:
+        wav_out = np.concatenate([wav_out, work_wav[len(wav_out) :].astype(np.float32, copy=False)])
+
+    if boundary_pad_samples > 0:
+        start = boundary_pad_samples
+        stop = start + len(noisy_wav)
+        wav_out = wav_out[start:stop]
     return wav_out, mask
 
 
@@ -137,6 +150,28 @@ def main() -> None:
         default=None,
         help="Optional fail threshold for max(|out|)/max(|noisy|).",
     )
+    parser.add_argument(
+        "--strict-length",
+        action="store_true",
+        help="Do not paste original tail back when output is shorter than input.",
+    )
+    parser.add_argument(
+        "--pad-end-for-chunking",
+        action="store_true",
+        help="Zero-pad input so last chunk fully covers input tail before split.",
+    )
+    parser.add_argument(
+        "--ola-min-weight",
+        type=float,
+        default=1e-3,
+        help="Boundary stability threshold used during overlap-add normalization.",
+    )
+    parser.add_argument(
+        "--boundary-pad-samples",
+        type=int,
+        default=0,
+        help="Pad both sides before chunking, then crop back after reconstruction.",
+    )
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -172,6 +207,10 @@ def main() -> None:
             device=torch.device("cpu"),
             log_eps=args.log_eps,
             identity_mask=True,
+            preserve_input_tail=not args.strict_length,
+            pad_end_for_chunking=args.pad_end_for_chunking,
+            ola_min_weight=args.ola_min_weight,
+            boundary_pad_samples=args.boundary_pad_samples,
         )
         print("mask mode: identity (all ones)")
         print(
@@ -183,7 +222,16 @@ def main() -> None:
         model = GRUChunkDenoiser(hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
         load_weights(model, weights, device)
         model.eval()
-        wav_out, mask = enhance_waveform(noisy_wav, model, device, args.log_eps)
+        wav_out, mask = enhance_waveform(
+            noisy_wav,
+            model,
+            device,
+            args.log_eps,
+            preserve_input_tail=not args.strict_length,
+            pad_end_for_chunking=args.pad_end_for_chunking,
+            ola_min_weight=args.ola_min_weight,
+            boundary_pad_samples=args.boundary_pad_samples,
+        )
         print(
             "mask mode: model"
             f" ({os.path.basename(weights)})"

@@ -3,7 +3,6 @@
 import os
 from typing import Tuple
 
-import librosa
 import numpy as np
 import soundfile as sf
 import torch
@@ -46,10 +45,22 @@ def chunk_waveform(
     waveform: np.ndarray,
     chunk_size: int = CHUNK_SAMPLES,
     hop: int = CHUNK_HOP,
+    *,
+    pad_end: bool = False,
 ) -> np.ndarray:
     """Split waveform into overlapping chunks of shape (num_chunks, chunk_size)."""
     if waveform.ndim != 1:
         raise ValueError(f"Expected 1-D waveform, got shape {waveform.shape}")
+    if pad_end:
+        if len(waveform) == 0:
+            return np.empty((0, chunk_size), dtype=waveform.dtype)
+        if len(waveform) <= chunk_size:
+            padded = np.pad(waveform, (0, chunk_size - len(waveform)))
+            return np.ascontiguousarray(padded[None, :])
+        n_chunks = int(np.ceil((len(waveform) - chunk_size) / hop)) + 1
+        target_len = (n_chunks - 1) * hop + chunk_size
+        if target_len > len(waveform):
+            waveform = np.pad(waveform, (0, target_len - len(waveform)))
     if len(waveform) < chunk_size:
         return np.empty((0, chunk_size), dtype=waveform.dtype)
 
@@ -213,6 +224,7 @@ def overlap_add_average(
     *,
     synthesis_window: str = WINDOW,
     win_length: int = CHUNK_SAMPLES,
+    min_weight: float = 1e-3,
 ) -> np.ndarray:
     """Overlap-add chunks with window-aware normalization."""
     if chunks.shape[0] == 0:
@@ -223,6 +235,8 @@ def overlap_add_average(
     weight = np.zeros(total, dtype=np.float32)
     if synthesis_window == "hann":
         win = _hann_window_np(win_length)
+    elif synthesis_window in {"rect", "ones"}:
+        win = np.ones(win_length, dtype=np.float32)
     else:
         raise ValueError(f"Unsupported window: {synthesis_window}")
     win = win[:wlen]
@@ -232,8 +246,7 @@ def overlap_add_average(
         weight[start : start + wlen] += win
     # Guard boundary regions where Hann weight is ~0 to avoid blow-ups
     # when masked spectra produce non-zero edge samples.
-    min_weight = 1e-3
-    stable = weight >= min_weight
+    stable = weight > 0.0 if min_weight <= 0.0 else weight >= min_weight
     out[stable] /= weight[stable]
     out[~stable] = 0.0
     return out

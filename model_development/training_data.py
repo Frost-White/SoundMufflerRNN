@@ -68,8 +68,8 @@ def preload_stft_mag_pairs(
             tick(label, i, total)
             continue
         L = min(len(nw), len(cw))
-        chunks_n = chunk_waveform(nw[:L])
-        chunks_c = chunk_waveform(cw[:L])
+        chunks_n = chunk_waveform(nw[:L], pad_end=True)
+        chunks_c = chunk_waveform(cw[:L], pad_end=True)
         if chunks_n.shape[0] == 0:
             tick(label, i, total)
             continue

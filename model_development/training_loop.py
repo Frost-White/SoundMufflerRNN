@@ -75,8 +75,8 @@ def _overlap_add_average_torch(chunks: torch.Tensor, hop: int = CHUNK_HOP) -> to
         start = i * hop
         out[start : start + wlen] = out[start : start + wlen] + chunks[i]
         weight[start : start + wlen] = weight[start : start + wlen] + win
-    min_weight = 1e-3
-    stable = weight >= min_weight
+    min_weight = 0.0
+    stable = weight > 0.0 if min_weight <= 0.0 else weight >= min_weight
     out_stable = out.clone()
     out_stable[stable] = out_stable[stable] / weight[stable]
     out_stable[~stable] = 0.0

@@ -175,7 +175,16 @@ def _enhance_waveform(
     device: torch.device,
     log_eps: float,
 ) -> np.ndarray:
-    wav_out, _ = enhance_waveform(noisy, model, device, log_eps)
+    wav_out, _ = enhance_waveform(
+        noisy,
+        model,
+        device,
+        log_eps,
+        preserve_input_tail=False,
+        pad_end_for_chunking=True,
+        ola_min_weight=0.0,
+        boundary_pad_samples=240,
+    )
     return wav_out
 
 
