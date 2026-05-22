@@ -1,0 +1,107 @@
+{
+  "config": {
+    "noisy_root": "c:\\SoundMufflerRNN\\data\\test\\noisy_testset_wav",
+    "clean_root": "c:\\SoundMufflerRNN\\data\\test\\clean_testset_wav",
+    "weights": "c:\\SoundMufflerRNN\\model_development\\runs\\20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume\\best_weights.pt",
+    "out_dir": "c:\\SoundMufflerRNN\\model_development\\eval_outputs\\20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume",
+    "device": "cuda",
+    "hidden_dim": 128,
+    "num_layers": 3,
+    "log_eps": 1e-08,
+    "max_files": null,
+    "lag_search_max_samples": 0,
+    "metric_sr": 16000,
+    "torchmetrics_enabled": true,
+    "stoi_enabled": true,
+    "pesq_enabled": true
+  },
+  "summary": {
+    "total_files": 824,
+    "ok_files": 824,
+    "error_files": 0,
+    "metrics": {
+      "noisy_snr_db": {
+        "count": 824,
+        "mean": 8.394864777674405,
+        "median": 7.130006313323975,
+        "std": 5.612976302038658
+      },
+      "noisy_si_sdr_db": {
+        "count": 824,
+        "mean": 8.393919100255923,
+        "median": 7.181602478027344,
+        "std": 5.614281423657281
+      },
+      "noisy_si_snr_db": {
+        "count": 824,
+        "mean": 8.394320510769742,
+        "median": 7.181709289550781,
+        "std": 5.614304180574545
+      },
+      "snr_db": {
+        "count": 824,
+        "mean": 10.260579289741887,
+        "median": 10.156846046447754,
+        "std": 3.2518623509992945
+      },
+      "si_sdr_db": {
+        "count": 824,
+        "mean": 9.793972216211984,
+        "median": 9.752820491790771,
+        "std": 3.598464862904164
+      },
+      "si_snr_db": {
+        "count": 824,
+        "mean": 9.794391412920888,
+        "median": 9.75300931930542,
+        "std": 3.5984693376648687
+      },
+      "snr_gain_db": {
+        "count": 824,
+        "mean": 1.8657145120674807,
+        "median": 2.3764712810516357,
+        "std": 3.5515561150016923
+      },
+      "si_sdr_gain_db": {
+        "count": 824,
+        "mean": 1.4000531159560603,
+        "median": 1.853754997253418,
+        "std": 3.4730347187751707
+      },
+      "si_snr_gain_db": {
+        "count": 824,
+        "mean": 1.4000709021511462,
+        "median": 1.8532094955444336,
+        "std": 3.473257317250927
+      },
+      "noisy_pesq": {
+        "count": 824,
+        "mean": 1.967330538532109,
+        "median": 1.7958170175552368,
+        "std": 0.7510989499773013
+      },
+      "stoi": {
+        "count": 824,
+        "mean": 0.8797802551350822,
+        "median": 0.8943492443954162,
+        "std": 0.07144695711623161
+      },
+      "pesq": {
+        "count": 824,
+        "mean": 1.671801533513856,
+        "median": 1.639452576637268,
+        "std": 0.3958623806186257
+      },
+      "pesq_gain": {
+        "count": 824,
+        "mean": -0.29552900501825274,
+        "median": -0.1392253041267395,
+        "std": 0.4703359913937668
+      }
+    }
+  },
+  "artifacts": {
+    "metrics_csv": "metrics_eval.csv",
+    "summary_json": "eval_summary.json"
+  }
+}

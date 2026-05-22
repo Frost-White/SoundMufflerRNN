@@ -2,19 +2,40 @@
   "noisy_root": "c:\\SoundMufflerRNN\\data\\train\\noisy_trainset_56spk_wav",
   "clean_root": "c:\\SoundMufflerRNN\\data\\train\\clean_trainset_56spk_wav",
   "out_dir": null,
-  "run_tag": "gru_h128_L3_bs16_lr0.001",
+  "run_tag": "gru_h128_L3_bs16_lr1e-05",
   "val_fraction": 0.1,
   "hidden_dim": 128,
   "gru_num_layers": 3,
   "gru_dropout": 0.05,
-  "epochs": 25,
+  "epochs": 30,
   "batch_size": 16,
-  "lr": 0.001,
+  "lr": 1e-05,
   "workers": 0,
   "seed": 0,
   "device": "cuda",
   "log_eps": 1e-08,
-  "out_dir_resolved": "c:\\SoundMufflerRNN\\model_development\\runs\\20260514_231036_gru_h128_L3_bs16_lr0.001",
+  "loss_log_eps": 1e-08,
+  "w_log_mag": 1.0,
+  "w_linear_mag": 0.05,
+  "w_mrstft": 0.05,
+  "mrstft_resolutions": [
+    [
+      240,
+      240,
+      60
+    ],
+    [
+      480,
+      480,
+      120
+    ],
+    [
+      960,
+      960,
+      240
+    ]
+  ],
+  "out_dir_resolved": "c:\\SoundMufflerRNN\\model_development\\runs\\20260519_231544_gru_h128_L3_bs16_lr1e-05",
   "freq_bins": 481,
   "model": "GRUChunkDenoiser",
   "batches_per_train_epoch": 1298,
