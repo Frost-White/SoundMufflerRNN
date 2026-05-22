@@ -33,7 +33,7 @@ _DEFAULT_WEIGHTS = os.path.normpath(
     os.path.join(
         _BASE,
         "runs",
-        "20260519_231544_gru_h128_L3_bs16_lr1e-05",
+        "20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume",
         "best_weights.pt",
     )
 )
@@ -83,8 +83,10 @@ class EvalRow:
     snr_gain_db: float
     si_sdr_gain_db: float
     si_snr_gain_db: float
+    noisy_pesq: float
     stoi: float
     pesq: float
+    pesq_gain: float
     best_lag_samples: int
     peak_ratio: float
     status: str
@@ -223,8 +225,10 @@ def _summary(rows: list[EvalRow]) -> dict:
             "snr_gain_db": stats("snr_gain_db"),
             "si_sdr_gain_db": stats("si_sdr_gain_db"),
             "si_snr_gain_db": stats("si_snr_gain_db"),
+            "noisy_pesq": stats("noisy_pesq"),
             "stoi": stats("stoi"),
             "pesq": stats("pesq"),
+            "pesq_gain": stats("pesq_gain"),
         },
     }
 
@@ -336,10 +340,12 @@ def main() -> None:
             snr_gain_db,
             si_sdr_gain_db,
             si_snr_gain_db,
+            noisy_pesq,
             stoi_v,
             pesq_v,
+            pesq_gain,
             peak_ratio,
-        ) = (float("nan"),) * 12
+        ) = (float("nan"),) * 14
         best_lag_samples = 0
         try:
             noisy_wav, _ = load_audio(noisy_path)
@@ -374,6 +380,7 @@ def main() -> None:
             )
 
             clean16 = _to_metric_sr(clean_eval, SR)
+            noisy16 = _to_metric_sr(noisy_eval, SR)
             enh16 = _to_metric_sr(enhanced_eval, SR)
 
             if _HAS_STOI:
@@ -386,9 +393,16 @@ def main() -> None:
                 err_msgs.append("stoi:package_not_available")
 
             if _HAS_PESQ:
+                noisy_pesq, noisy_pesq_err = _safe_metric(
+                    lambda: pesq_fn(_METRIC_SR, clean16, noisy16, "wb")
+                )
+                if noisy_pesq_err:
+                    err_msgs.append(f"noisy_pesq:{noisy_pesq_err}")
                 pesq_v, pesq_err = _safe_metric(lambda: pesq_fn(_METRIC_SR, clean16, enh16, "wb"))
                 if pesq_err:
                     err_msgs.append(f"pesq:{pesq_err}")
+                if math.isfinite(noisy_pesq) and math.isfinite(pesq_v):
+                    pesq_gain = pesq_v - noisy_pesq
             else:
                 err_msgs.append("pesq:package_not_available")
 
@@ -417,8 +431,10 @@ def main() -> None:
             snr_gain_db=float(snr_gain_db),
             si_sdr_gain_db=float(si_sdr_gain_db),
             si_snr_gain_db=float(si_snr_gain_db),
+            noisy_pesq=float(noisy_pesq),
             stoi=float(stoi_v),
             pesq=float(pesq_v),
+            pesq_gain=float(pesq_gain),
             best_lag_samples=int(best_lag_samples),
             peak_ratio=float(peak_ratio),
             status=status,
@@ -432,7 +448,8 @@ def main() -> None:
             f"si_sdr={row.si_sdr_db:.3f} (gain={row.si_sdr_gain_db:.3f}) "
             f"si_snr={row.si_snr_db:.3f} (gain={row.si_snr_gain_db:.3f}) "
             f"lag={row.best_lag_samples} peak_ratio={row.peak_ratio:.3f} "
-            f"stoi={row.stoi:.3f} pesq={row.pesq:.3f}"
+            f"stoi={row.stoi:.3f} pesq={row.pesq:.3f} "
+            f"(noisy={row.noisy_pesq:.3f}, gain={row.pesq_gain:.3f})"
         )
 
     with open(csv_path, "w", encoding="utf-8", newline="") as f:

@@ -17,12 +17,12 @@ from eval_one import load_weights
 from core.model import GRUChunkDenoiser
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_METRICS_CSV = os.path.join(_BASE, "eval_outputs", "metrics_eval.csv")
+_DEFAULT_METRICS_CSV = os.path.join(_BASE, "eval_outputs", "20260521_152024_gru_h128_L3_bs16_lr1e-05_resume", "metrics_eval.csv")
 _DEFAULT_WEIGHTS = os.path.normpath(
     os.path.join(
         _BASE,
         "runs",
-        "20260519_231544_gru_h128_L3_bs16_lr1e-05",
+        "20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume",
         "best_weights.pt",
     )
 )

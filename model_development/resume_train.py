@@ -19,8 +19,9 @@ from training.data import collate_padded_utterances, prepare_train_val_datasets
 from training.loop import run_training_loop
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_BASE)
 _RUNS_ROOT = os.path.join(_BASE, "runs")
-_BASELINE_MODEL_DIR = os.path.join(_BASE, "baseline_model")
+_BASELINE_MODEL_DIR = os.path.join(_RUNS_ROOT, "20260521_152024_gru_h128_L3_bs16_lr1e-05_resume1")
 _DEFAULT_BASELINE_CKPT = os.path.join(_BASELINE_MODEL_DIR, "last.pt")
 
 
@@ -34,6 +35,40 @@ def _load_run_config(checkpoint_path: str) -> dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _resolve_checkpoint_path(raw_checkpoint: str) -> str | None:
+    cleaned = os.path.normpath(raw_checkpoint.strip().strip('"').strip("'"))
+    if not cleaned:
+        return None
+
+    candidates = []
+    if os.path.isabs(cleaned):
+        candidates.append(cleaned)
+    else:
+        candidates.extend(
+            [
+                os.path.abspath(cleaned),
+                os.path.abspath(os.path.join(_BASE, cleaned)),
+                os.path.abspath(os.path.join(_REPO_ROOT, cleaned)),
+            ]
+        )
+
+    # Common Windows case: path starts with model_development/ while cwd is already model_development/.
+    md_prefix = f"model_development{os.sep}"
+    if cleaned.startswith(md_prefix):
+        tail = cleaned[len(md_prefix) :]
+        candidates.append(os.path.abspath(os.path.join(_BASE, tail)))
+
+    seen = set()
+    for c in candidates:
+        norm = os.path.normcase(os.path.normpath(c))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if os.path.isfile(c):
+            return c
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Resume training from checkpoint.")
     parser.add_argument(
@@ -41,7 +76,7 @@ def main() -> None:
         default=None,
         help="Path to checkpoint (.pt). Defaults to model_development/baseline_model/last.pt.",
     )
-    parser.add_argument("--epochs", type=int, default=40, help="Additional epochs to run.")
+    parser.add_argument("--epochs", type=int, default=50, help="Additional epochs to run.")
     parser.add_argument("--run-tag", default=None, help="New run tag (default: <old_tag>_resume).")
     parser.add_argument("--out-dir", default=None, help="Optional explicit output dir.")
     parser.add_argument("--device", default=None, help="cuda/cpu override.")
@@ -62,13 +97,15 @@ def main() -> None:
     parser.add_argument("--reset-optimizer", action="store_true", help="Ignore optimizer state from checkpoint.")
     args = parser.parse_args()
 
-    checkpoint = args.checkpoint or _DEFAULT_BASELINE_CKPT
-    if not checkpoint:
+    raw_checkpoint = args.checkpoint or _DEFAULT_BASELINE_CKPT
+    if not raw_checkpoint:
         print("Checkpoint not found. Pass --checkpoint or create baseline_model/last.pt first.", file=sys.stderr)
         sys.exit(1)
-    checkpoint = os.path.abspath(checkpoint)
-    if not os.path.isfile(checkpoint):
-        print(f"Checkpoint not found: {checkpoint}", file=sys.stderr)
+    checkpoint = _resolve_checkpoint_path(raw_checkpoint)
+    if checkpoint is None:
+        attempted = os.path.abspath(raw_checkpoint)
+        print(f"Checkpoint not found: {attempted}", file=sys.stderr)
+        print("Tip: try a path relative to repo root or an absolute path.", file=sys.stderr)
         sys.exit(1)
 
     hp = dict(HYPERPARAMS)
