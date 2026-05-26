@@ -218,6 +218,70 @@ def synthesis_istft_chunks(
     return np.ascontiguousarray(chunks.cpu().numpy().astype(np.float32, copy=False))
 
 
+def project_to_stft_consistency_torch(spectra: torch.Tensor) -> torch.Tensor:
+    """
+    Project spectra onto the STFT-consistent set via iSTFT->STFT.
+
+    Accepts shape (N, F) or (B, T, F) complex tensor and returns same shape.
+    """
+    if spectra.numel() == 0:
+        return spectra
+    if not torch.is_complex(spectra):
+        raise ValueError("project_to_stft_consistency_torch expects complex spectra")
+    if spectra.ndim == 2:
+        flat = spectra
+        out_shape = spectra.shape
+    elif spectra.ndim == 3:
+        out_shape = spectra.shape
+        flat = spectra.reshape(-1, spectra.shape[-1])
+    else:
+        raise ValueError(f"Expected (N,F) or (B,T,F), got {tuple(spectra.shape)}")
+    n_fft = int((flat.shape[-1] - 1) * 2)
+    # Invert one-frame analysis STFT with explicit window compensation so
+    # projection approximates A(A^{-1}(X)) instead of introducing a w^2 drift.
+    half = flat.to(dtype=torch.complex64)
+    mirrored = torch.conj(torch.flip(half[:, 1:-1], dims=[1]))
+    full = torch.cat([half, mirrored], dim=1)
+    chunks_windowed = torch.fft.ifft(full, n=n_fft, dim=1).real.to(dtype=torch.float32)
+    win = _hann_window_torch(n_fft, dtype=chunks_windowed.dtype, device=chunks_windowed.device)
+    chunks = chunks_windowed / torch.clamp(win.unsqueeze(0), min=1e-3)
+    projected = analysis_stft_chunks_torch(chunks, n_fft=n_fft, hop_length=STFT_HOP, win_length=n_fft)
+    return projected.reshape(out_shape)
+
+
+def blend_consistent_spectra_torch(
+    raw_spectra: torch.Tensor,
+    projected_spectra: torch.Tensor,
+    blend: float = 1.0,
+) -> torch.Tensor:
+    """Blend raw and projected spectra (0=raw, 1=projected)."""
+    a = float(max(0.0, min(1.0, blend)))
+    return raw_spectra + a * (projected_spectra - raw_spectra)
+
+
+def project_to_stft_consistency(spectra: np.ndarray) -> np.ndarray:
+    """NumPy version of STFT consistency projection via iSTFT->STFT."""
+    if spectra.size == 0:
+        return spectra
+    if not np.iscomplexobj(spectra):
+        raise ValueError("project_to_stft_consistency expects complex spectra")
+    if spectra.ndim not in (2, 3):
+        raise ValueError(f"Expected (N,F) or (B,T,F), got {spectra.shape}")
+    x = torch.from_numpy(np.ascontiguousarray(spectra.astype(np.complex64, copy=False)))
+    projected = project_to_stft_consistency_torch(x).cpu().numpy()
+    return np.ascontiguousarray(projected.astype(np.complex64, copy=False))
+
+
+def blend_consistent_spectra(
+    raw_spectra: np.ndarray,
+    projected_spectra: np.ndarray,
+    blend: float = 1.0,
+) -> np.ndarray:
+    """Blend raw and projected spectra (0=raw, 1=projected)."""
+    a = float(max(0.0, min(1.0, blend)))
+    return np.ascontiguousarray((raw_spectra + a * (projected_spectra - raw_spectra)).astype(np.complex64))
+
+
 def overlap_add_average(
     chunks: np.ndarray,
     hop: int = CHUNK_HOP,

@@ -1,12 +1,12 @@
 {
-  "run_tag": "gru_h128_L3_bs16_lr1e-05",
-  "run_dir": "c:\\SoundMufflerRNN\\model_development\\runs\\20260519_231544_gru_h128_L3_bs16_lr1e-05",
-  "started_at": "2026-05-19T20:25:00.473821+00:00",
-  "epochs_done": 25,
+  "run_tag": "20260525_015037_all1_resume_resume",
+  "run_dir": "C:\\SoundMufflerRNN\\model_development\\runs\\20260525_163456_20260525_015037_all1_resume_resume",
+  "started_at": "2026-05-25T13:34:58.896560+00:00",
+  "epochs_done": 26,
   "epochs_total_planned": 30,
-  "best_val_total": 1.3868184269635593,
-  "best_epoch": 25,
-  "total_epoch_time_sec": 60626.071,
+  "best_val_total": 3.7144313634302337,
+  "best_epoch": 26,
+  "total_epoch_time_sec": 59925.901,
   "artifacts": {
     "run_config": "run_config.json",
     "model_info": "model_info.txt",
@@ -18,5 +18,5 @@
     "last_weights": "last_weights.pt",
     "best_weights": "best_weights.pt"
   },
-  "last_updated_at": "2026-05-20T13:16:00.487183+00:00"
+  "last_updated_at": "2026-05-26T06:13:53.851051+00:00"
 }

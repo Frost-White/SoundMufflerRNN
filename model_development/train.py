@@ -33,6 +33,11 @@ HYPERPARAMS = {
     "batch_size": 16,
     "lr": 1e-5,
     "workers": 0,
+    "preload_all": False,
+    "cv_folds": 10,
+    "cv_fold_index": 0,
+    "cv_shuffle": True,
+    "cv_seed": 0,
     "seed": 0,
     "device": "cuda",
     "log_eps": 1e-8,
@@ -40,6 +45,12 @@ HYPERPARAMS = {
     "w_log_mag": 1.0,
     "w_linear_mag": 0.05,
     "w_mrstft": 0.05,
+    "use_stft_consistency": True,
+    "w_consistency": 0.1,
+    "w_raw_aux": 0.0,
+    "consistency_apply_in_val": True,
+    "consistency_projection_mode": "full",
+    "consistency_blend": 1.0,
     "mrstft_resolutions": [[240, 240, 60], [480, 480, 120], [960, 960, 240]],
 }
 HYPERPARAMS["run_tag"] = (
@@ -62,6 +73,11 @@ def main() -> None:
         hp["clean_root"],
         hp["val_fraction"],
         hp["log_eps"],
+        preload_all=bool(hp.get("preload_all", True)),
+        cv_folds=int(hp.get("cv_folds", 1)),
+        cv_fold_index=int(hp.get("cv_fold_index", 0)),
+        cv_seed=int(hp.get("cv_seed", hp["seed"])),
+        cv_shuffle=bool(hp.get("cv_shuffle", True)),
     )
 
     train_loader = DataLoader(

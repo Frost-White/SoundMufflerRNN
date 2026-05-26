@@ -22,7 +22,7 @@ _DEFAULT_WEIGHTS = os.path.normpath(
     os.path.join(
         _BASE,
         "runs",
-        "20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume",
+        "20260525_015037_gru_h128_L3_bs16_lr1e-05",
         "best_weights.pt",
     )
 )
@@ -94,7 +94,7 @@ def main() -> None:
     model.eval()
 
     noisy_wav, _ = load_audio(noisy_path)
-    enhanced = _enhance_waveform(noisy_wav, model, device, args.log_eps)
+    enhanced, consistency_delta = _enhance_waveform(noisy_wav, model, device, args.log_eps)
 
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(filename)[0]
@@ -108,6 +108,7 @@ def main() -> None:
         print(f"clean:      {clean_path}")
     print(f"saved:      {enhanced_path}")
     print(f"samples={len(enhanced)} sr={SR}")
+    print(f"consistency_delta={consistency_delta:.8f}")
 
     if args.also_save_noisy_clean:
         noisy_out = os.path.join(out_dir, f"worst_pesq_noisy_{stem}.wav")

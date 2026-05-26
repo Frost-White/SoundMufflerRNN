@@ -21,7 +21,7 @@ from training.loop import run_training_loop
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_BASE)
 _RUNS_ROOT = os.path.join(_BASE, "runs")
-_BASELINE_MODEL_DIR = os.path.join(_RUNS_ROOT, "20260521_152024_gru_h128_L3_bs16_lr1e-05_resume1")
+_BASELINE_MODEL_DIR = os.path.join(_RUNS_ROOT, "20260525_131018_20260525_015037_all1_resume")
 _DEFAULT_BASELINE_CKPT = os.path.join(_BASELINE_MODEL_DIR, "last.pt")
 
 
@@ -153,6 +153,11 @@ def main() -> None:
         hp["clean_root"],
         hp["val_fraction"],
         hp["log_eps"],
+        preload_all=bool(hp.get("preload_all", True)),
+        cv_folds=int(hp.get("cv_folds", 1)),
+        cv_fold_index=int(hp.get("cv_fold_index", 0)),
+        cv_seed=int(hp.get("cv_seed", hp["seed"])),
+        cv_shuffle=bool(hp.get("cv_shuffle", True)),
     )
     train_loader = DataLoader(
         train_ds,

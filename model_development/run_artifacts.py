@@ -102,10 +102,12 @@ def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
         "train_linear_mag_mse",
         "train_log_mag_mse",
         "train_mrstft",
+        "train_consistency_mse",
         "train_total",
         "val_linear_mag_mse",
         "val_log_mag_mse",
         "val_mrstft",
+        "val_consistency_mse",
         "val_total",
         "val_snr_gain_db",
         "epoch_time_s",
@@ -124,6 +126,7 @@ def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
                         r.get("train_log_mag_mse", r.get("train_mse", r.get("train_loss")))
                     ),
                     "train_mrstft": _csv_metric_float(r.get("train_mrstft", r.get("train_mss"))),
+                    "train_consistency_mse": _csv_metric_float(r.get("train_consistency_mse")),
                     "train_total": _csv_metric_float(r.get("train_total")),
                     "val_linear_mag_mse": _csv_metric_float(
                         r.get("val_linear_mag_mse", r.get("val_mse", r.get("val_loss")))
@@ -132,6 +135,7 @@ def write_metrics_train_csv(path: str, epoch_records: list[dict]) -> None:
                         r.get("val_log_mag_mse", r.get("val_mse", r.get("val_loss")))
                     ),
                     "val_mrstft": _csv_metric_float(r.get("val_mrstft", r.get("val_mss"))),
+                    "val_consistency_mse": _csv_metric_float(r.get("val_consistency_mse")),
                     "val_total": _csv_metric_float(r.get("val_total")),
                     "val_snr_gain_db": _csv_metric_float(r.get("val_snr_gain_db")),
                     "epoch_time_s": r.get("epoch_sec", r.get("epoch_time_s", "")),

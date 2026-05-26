@@ -13,22 +13,24 @@ import torch
 from core.audio import (
     SR,
     analysis_stft_chunks,
+    blend_consistent_spectra,
     chunk_waveform,
     load_audio,
     overlap_add_average,
+    project_to_stft_consistency,
     synthesis_istft_chunks,
 )
 from core.model import GRUChunkDenoiser
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_NOISY_FILE = os.path.normpath(
-    os.path.join(_BASE, "..", "data", "test", "noisy_testset_wav", "p257_404.wav")
+    os.path.join(_BASE, "..", "data", "test", "noisy_testset_wav", "p257_202.wav")
 )
 _DEFAULT_WEIGHTS = os.path.normpath(
     os.path.join(
         _BASE,
         "runs",
-        "20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume",
+        "20260525_163456_20260525_015037_all1_resume_resume",
         "best_weights.pt",
     )
 )
@@ -52,7 +54,10 @@ def enhance_waveform(
     pad_end_for_chunking: bool = False,
     ola_min_weight: float = 1e-3,
     boundary_pad_samples: int = 0,
-) -> tuple[np.ndarray, np.ndarray]:
+    enforce_stft_consistency: bool = True,
+    consistency_blend: float = 1.0,
+    return_consistency_delta: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, float]:
     work_wav = noisy_wav.astype(np.float32, copy=False)
     if boundary_pad_samples > 0:
         work_wav = np.pad(work_wav, (boundary_pad_samples, boundary_pad_samples))
@@ -74,7 +79,18 @@ def enhance_waveform(
         with torch.no_grad():
             mask = model(x, lengths).squeeze(0).cpu().numpy()
 
-    enhanced_spec = mask * noisy_spec
+    enhanced_spec_raw = mask * noisy_spec
+    consistency_delta = 0.0
+    if enforce_stft_consistency:
+        enhanced_spec_proj = project_to_stft_consistency(enhanced_spec_raw)
+        consistency_delta = float(np.mean(np.abs(enhanced_spec_proj - enhanced_spec_raw)))
+        enhanced_spec = blend_consistent_spectra(
+            enhanced_spec_raw,
+            enhanced_spec_proj,
+            blend=consistency_blend,
+        )
+    else:
+        enhanced_spec = enhanced_spec_raw
     chunk_out = synthesis_istft_chunks(enhanced_spec)
     wav_out = overlap_add_average(chunk_out, min_weight=ola_min_weight)
     if len(wav_out) > len(work_wav):
@@ -86,6 +102,8 @@ def enhance_waveform(
         start = boundary_pad_samples
         stop = start + len(noisy_wav)
         wav_out = wav_out[start:stop]
+    if return_consistency_delta:
+        return wav_out, mask, consistency_delta
     return wav_out, mask
 
 
@@ -121,6 +139,11 @@ def main() -> None:
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
     parser.add_argument("--save-noisy", action="store_true")
+    parser.add_argument(
+        "--print-consistency-delta",
+        action="store_true",
+        help="Print mean |X_proj - X_raw| after mandatory consistency projection.",
+    )
     args = parser.parse_args()
 
     noisy_file = os.path.abspath(args.noisy_file)
@@ -142,7 +165,7 @@ def main() -> None:
     model = GRUChunkDenoiser(hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(device)
     load_weights(model, weights, device)
     model.eval()
-    wav_out, mask = enhance_waveform(
+    wav_out, mask, consistency_delta = enhance_waveform(
         noisy_wav,
         model,
         device,
@@ -151,6 +174,9 @@ def main() -> None:
         pad_end_for_chunking=True,
         ola_min_weight=0.0,
         boundary_pad_samples=240,
+        enforce_stft_consistency=True,
+        consistency_blend=1.0,
+        return_consistency_delta=True,
     )
 
     os.makedirs(out_dir, exist_ok=True)
@@ -165,6 +191,8 @@ def main() -> None:
     print(f"file:   {noisy_file}")
     print(f"saved:  {out_path}")
     print(f"samples={len(wav_out)} sr={SR} chunks={mask.shape[0]}")
+    if args.print_consistency_delta:
+        print(f"consistency_delta={consistency_delta:.8f}")
     print_compare_metrics(noisy_wav, wav_out, "noisy->out")
 
 

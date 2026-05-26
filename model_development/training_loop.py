@@ -10,7 +10,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from core.audio import CHUNK_HOP, N_FFT, analysis_stft_chunks_torch, synthesis_istft_chunks_torch
+from core.audio import (
+    CHUNK_HOP,
+    N_FFT,
+    analysis_stft_chunks_torch,
+    blend_consistent_spectra_torch,
+    project_to_stft_consistency_torch,
+    synthesis_istft_chunks_torch,
+)
 from training.artifacts import utc_now_iso, write_metrics_train_csv, write_run_plots, write_train_summary
 
 
@@ -50,17 +57,35 @@ def masked_log_mean_squared_error(
     return masked_mean_squared_error(torch.log(pred + eps), torch.log(target + eps), lengths)
 
 
-def _pred_chunks_from_mask(
+def _pred_spec_from_mask(
     mask: torch.Tensor,
     chunks_noisy: torch.Tensor,
 ) -> torch.Tensor:
     flat_chunks = chunks_noisy.reshape(-1, chunks_noisy.shape[-1])
     noisy_spec_flat = analysis_stft_chunks_torch(flat_chunks)
     noisy_spec = noisy_spec_flat.reshape(*chunks_noisy.shape[:-1], noisy_spec_flat.shape[-1])
-    pred_spec = mask.to(dtype=noisy_spec.dtype) * noisy_spec
+    return mask.to(dtype=noisy_spec.dtype) * noisy_spec
+
+
+def _pred_chunks_from_spec(
+    pred_spec: torch.Tensor,
+    chunks_noisy: torch.Tensor,
+) -> torch.Tensor:
     pred_spec_flat = pred_spec.reshape(-1, pred_spec.shape[-1])
     pred_chunks_flat = synthesis_istft_chunks_torch(pred_spec_flat, length=chunks_noisy.shape[-1])
     return pred_chunks_flat.reshape(*pred_spec.shape[:-1], chunks_noisy.shape[-1])
+
+
+def _masked_complex_consistency_mse(
+    raw_spec: torch.Tensor,
+    projected_spec: torch.Tensor,
+    lengths: torch.Tensor,
+) -> torch.Tensor:
+    _, T, F = raw_spec.shape
+    device = raw_spec.device
+    valid = _valid_time_mask(lengths, T, device).unsqueeze(-1).to(dtype=raw_spec.real.dtype)
+    diff2 = (raw_spec.real - projected_spec.real) ** 2 + (raw_spec.imag - projected_spec.imag) ** 2
+    return (diff2 * valid).sum() / (valid.sum() * F).clamp_min(1.0)
 
 
 def _overlap_add_average_torch(chunks: torch.Tensor, hop: int = CHUNK_HOP) -> torch.Tensor:
@@ -160,14 +185,19 @@ def train_one_epoch(
     w_log_mag: float,
     w_linear_mag: float,
     w_mrstft: float,
+    use_stft_consistency: bool,
+    w_consistency: float,
+    w_raw_aux: float,
+    consistency_blend: float,
     mrstft_resolutions: list[tuple[int, int, int]],
     loss_log_eps: float,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     model.train()
     total_lin_se = 0.0
     total_log_se = 0.0
     total_n = 0.0
     total_mrstft = 0.0
+    total_consistency = 0.0
     num_batches = 0
     for batch in loader:
         x = batch["x"].to(device)
@@ -179,10 +209,21 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         mask = model(x, lengths)
-        pred_mag = mask * mag_n
+        pred_spec_raw = _pred_spec_from_mask(mask, chunks_n)
+        pred_spec_cons = pred_spec_raw
+        consistency_mse = pred_spec_raw.real.new_tensor(0.0)
+        if use_stft_consistency:
+            pred_spec_proj = project_to_stft_consistency_torch(pred_spec_raw)
+            pred_spec_cons = blend_consistent_spectra_torch(pred_spec_raw, pred_spec_proj, consistency_blend)
+            consistency_mse = _masked_complex_consistency_mse(pred_spec_raw, pred_spec_proj, lengths)
+
+        pred_mag = pred_spec_cons.abs()
+        pred_mag_raw = pred_spec_raw.abs()
         linear_mag_mse = masked_mean_squared_error(pred_mag, mag_c, lengths)
         log_mag_mse = masked_log_mean_squared_error(pred_mag, mag_c, lengths, loss_log_eps)
-        pred_chunks = _pred_chunks_from_mask(mask, chunks_n)
+        linear_mag_mse_raw = masked_mean_squared_error(pred_mag_raw, mag_c, lengths)
+        log_mag_mse_raw = masked_log_mean_squared_error(pred_mag_raw, mag_c, lengths, loss_log_eps)
+        pred_chunks = _pred_chunks_from_spec(pred_spec_cons, chunks_n)
         mrstft_loss = _multi_resolution_stft_loss(
             pred_chunks,
             chunks_c,
@@ -190,7 +231,13 @@ def train_one_epoch(
             mrstft_resolutions,
             eps=loss_log_eps,
         )
-        loss = w_log_mag * log_mag_mse + w_linear_mag * linear_mag_mse + w_mrstft * mrstft_loss
+        loss = (
+            w_log_mag * log_mag_mse
+            + w_linear_mag * linear_mag_mse
+            + w_mrstft * mrstft_loss
+            + w_consistency * consistency_mse
+            + w_raw_aux * (w_log_mag * log_mag_mse_raw + w_linear_mag * linear_mag_mse_raw)
+        )
         loss.backward()
         optimizer.step()
 
@@ -204,12 +251,19 @@ def train_one_epoch(
         total_log_se += log_se.detach().item()
         total_n += cnt.detach().item()
         total_mrstft += mrstft_loss.detach().item()
+        total_consistency += consistency_mse.detach().item()
         num_batches += 1
     mean_linear = total_lin_se / max(total_n, 1.0)
     mean_log = total_log_se / max(total_n, 1.0)
     mean_mrstft = total_mrstft / max(num_batches, 1)
-    mean_total = w_log_mag * mean_log + w_linear_mag * mean_linear + w_mrstft * mean_mrstft
-    return mean_linear, mean_log, mean_mrstft, mean_total
+    mean_consistency = total_consistency / max(num_batches, 1)
+    mean_total = (
+        w_log_mag * mean_log
+        + w_linear_mag * mean_linear
+        + w_mrstft * mean_mrstft
+        + w_consistency * mean_consistency
+    )
+    return mean_linear, mean_log, mean_mrstft, mean_consistency, mean_total
 
 
 @torch.no_grad()
@@ -220,10 +274,14 @@ def validate(
     w_log_mag: float,
     w_linear_mag: float,
     w_mrstft: float,
+    use_stft_consistency: bool,
+    w_consistency: float,
+    consistency_blend: float,
+    consistency_apply_in_val: bool,
     mrstft_resolutions: list[tuple[int, int, int]],
     loss_log_eps: float,
-) -> tuple[float, float, float, float, float]:
-    """(linear MSE, log MSE, MRSTFT, total, SNR gain dB on valid cells)."""
+) -> tuple[float, float, float, float, float, float]:
+    """(linear MSE, log MSE, MRSTFT, consistency MSE, total, SNR gain dB on valid cells)."""
     model.eval()
     total_lin_se = 0.0
     total_log_se = 0.0
@@ -231,6 +289,7 @@ def validate(
     sse_noisy = 0.0
     sse_pred = 0.0
     total_mrstft = 0.0
+    total_consistency = 0.0
     num_batches = 0
     for batch in loader:
         x = batch["x"].to(device)
@@ -241,8 +300,17 @@ def validate(
         lengths = batch["lengths"]
 
         mask = model(x, lengths)
-        pred_mag = mask * mag_n
-        pred_chunks = _pred_chunks_from_mask(mask, chunks_n)
+        pred_spec_raw = _pred_spec_from_mask(mask, chunks_n)
+        pred_spec_cons = pred_spec_raw
+        consistency_mse = pred_spec_raw.real.new_tensor(0.0)
+        if use_stft_consistency:
+            pred_spec_proj = project_to_stft_consistency_torch(pred_spec_raw)
+            if consistency_apply_in_val:
+                pred_spec_cons = blend_consistent_spectra_torch(pred_spec_raw, pred_spec_proj, consistency_blend)
+            consistency_mse = _masked_complex_consistency_mse(pred_spec_raw, pred_spec_proj, lengths)
+
+        pred_mag = pred_spec_cons.abs()
+        pred_chunks = _pred_chunks_from_spec(pred_spec_cons, chunks_n)
         mrstft_loss = _multi_resolution_stft_loss(
             pred_chunks,
             chunks_c,
@@ -261,18 +329,25 @@ def validate(
         sse_pred += ((pred_mag - mag_c) ** 2 * valid).sum().item()
         total_n += (valid.sum() * F).item()
         total_mrstft += mrstft_loss.item()
+        total_consistency += consistency_mse.item()
         num_batches += 1
 
     if total_n <= 0:
-        return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
     linear_mag_mse = total_lin_se / total_n
     log_mag_mse = total_log_se / total_n
     mrstft = total_mrstft / max(num_batches, 1)
-    total = w_log_mag * log_mag_mse + w_linear_mag * linear_mag_mse + w_mrstft * mrstft
+    consistency = total_consistency / max(num_batches, 1)
+    total = (
+        w_log_mag * log_mag_mse
+        + w_linear_mag * linear_mag_mse
+        + w_mrstft * mrstft
+        + w_consistency * consistency
+    )
     mse_noisy = sse_noisy / total_n
     mse_pred = sse_pred / total_n
     gain_db = 10.0 * math.log10(mse_noisy / (mse_pred + 1e-20))
-    return linear_mag_mse, log_mag_mse, mrstft, total, gain_db
+    return linear_mag_mse, log_mag_mse, mrstft, consistency, total, gain_db
 
 
 def run_training_loop(
@@ -289,6 +364,11 @@ def run_training_loop(
     w_log_mag = float(hp.get("w_log_mag", 1.0))
     w_linear_mag = float(hp.get("w_linear_mag", hp.get("mse_weight", 0.0)))
     w_mrstft = float(hp.get("w_mrstft", hp.get("mss_weight", 0.0)))
+    use_stft_consistency = bool(hp.get("use_stft_consistency", True))
+    consistency_apply_in_val = bool(hp.get("consistency_apply_in_val", True))
+    w_consistency = float(hp.get("w_consistency", 0.1 if use_stft_consistency else 0.0))
+    w_raw_aux = float(hp.get("w_raw_aux", 0.0))
+    consistency_blend = float(hp.get("consistency_blend", 1.0))
     loss_log_eps = float(hp.get("loss_log_eps", hp.get("log_eps", 1e-8)))
     if "mrstft_resolutions" in hp:
         mrstft_resolutions = [tuple(int(v) for v in r) for r in hp.get("mrstft_resolutions", [])]
@@ -305,7 +385,7 @@ def run_training_loop(
 
     for epoch in range(1, epochs + 1):
         t0 = time.perf_counter()
-        train_linear, train_log, train_mrstft, train_total = train_one_epoch(
+        train_linear, train_log, train_mrstft, train_consistency, train_total = train_one_epoch(
             model,
             train_loader,
             optimizer,
@@ -313,22 +393,31 @@ def run_training_loop(
             w_log_mag,
             w_linear_mag,
             w_mrstft,
+            use_stft_consistency,
+            w_consistency,
+            w_raw_aux,
+            consistency_blend,
             mrstft_resolutions,
             loss_log_eps,
         )
         if val_ds_len:
-            val_linear, val_log, val_mrstft, val_total, val_snr_gain_db = validate(
+            val_linear, val_log, val_mrstft, val_consistency, val_total, val_snr_gain_db = validate(
                 model,
                 val_loader,
                 device,
                 w_log_mag,
                 w_linear_mag,
                 w_mrstft,
+                use_stft_consistency,
+                w_consistency,
+                consistency_blend,
+                consistency_apply_in_val,
                 mrstft_resolutions,
                 loss_log_eps,
             )
         else:
-            val_linear, val_log, val_mrstft, val_total, val_snr_gain_db = (
+            val_linear, val_log, val_mrstft, val_consistency, val_total, val_snr_gain_db = (
+                float("nan"),
                 float("nan"),
                 float("nan"),
                 float("nan"),
@@ -343,10 +432,12 @@ def run_training_loop(
             "train_linear_mag_mse": train_linear,
             "train_log_mag_mse": train_log,
             "train_mrstft": train_mrstft,
+            "train_consistency_mse": train_consistency,
             "train_total": train_total,
             "val_linear_mag_mse": val_linear,
             "val_log_mag_mse": val_log,
             "val_mrstft": val_mrstft,
+            "val_consistency_mse": val_consistency,
             "val_total": val_total,
             "val_snr_gain_db": val_snr_gain_db,
             "epoch_sec": round(epoch_sec, 3),
@@ -367,8 +458,10 @@ def run_training_loop(
         )
         print(
             f"epoch {epoch}/{epochs}  "
-            f"train_total={train_total:.6f} (log={train_log:.6f}, lin={train_linear:.6f}, mr={train_mrstft:.6f})  "
-            f"val_total={val_total:.6f} (log={val_log:.6f}, lin={val_linear:.6f}, mr={val_mrstft:.6f})  "
+            f"train_total={train_total:.6f} "
+            f"(log={train_log:.6f}, lin={train_linear:.6f}, mr={train_mrstft:.6f}, cons={train_consistency:.6f})  "
+            f"val_total={val_total:.6f} "
+            f"(log={val_log:.6f}, lin={val_linear:.6f}, mr={val_mrstft:.6f}, cons={val_consistency:.6f})  "
             f"val_snr_gain_db={sg}  epoch_sec={epoch_sec:.1f}"
         )
 
@@ -379,10 +472,12 @@ def run_training_loop(
             "train_linear_mag_mse": train_linear,
             "train_log_mag_mse": train_log,
             "train_mrstft": train_mrstft,
+            "train_consistency_mse": train_consistency,
             "train_total": train_total,
             "val_linear_mag_mse": val_linear,
             "val_log_mag_mse": val_log,
             "val_mrstft": val_mrstft,
+            "val_consistency_mse": val_consistency,
             "val_total": val_total,
         }
         torch.save(ckpt, os.path.join(out_dir, "last.pt"))

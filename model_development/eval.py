@@ -17,7 +17,7 @@ import librosa
 import numpy as np
 import torch
 
-from core.audio import N_FFT, SR, load_audio
+from core.audio import N_FFT, SR, analysis_stft_chunks, chunk_waveform, load_audio
 from eval_one import enhance_waveform, load_weights
 from core.model import GRUChunkDenoiser
 from training.data import scan_wavs_by_basename
@@ -33,7 +33,7 @@ _DEFAULT_WEIGHTS = os.path.normpath(
     os.path.join(
         _BASE,
         "runs",
-        "20260522_001000_gru_h128_L3_bs16_lr1e-05_resume_resume",
+        "20260525_163456_20260525_015037_all1_resume_resume",
         "best_weights.pt",
     )
 )
@@ -87,6 +87,9 @@ class EvalRow:
     stoi: float
     pesq: float
     pesq_gain: float
+    consistency_proj_mae: float
+    residual_crest: float
+    residual_kurtosis: float
     best_lag_samples: int
     peak_ratio: float
     status: str
@@ -176,8 +179,8 @@ def _enhance_waveform(
     model: GRUChunkDenoiser,
     device: torch.device,
     log_eps: float,
-) -> np.ndarray:
-    wav_out, _ = enhance_waveform(
+) -> tuple[np.ndarray, float]:
+    wav_out, _, consistency_delta = enhance_waveform(
         noisy,
         model,
         device,
@@ -186,8 +189,28 @@ def _enhance_waveform(
         pad_end_for_chunking=True,
         ola_min_weight=0.0,
         boundary_pad_samples=240,
+        enforce_stft_consistency=True,
+        consistency_blend=1.0,
+        return_consistency_delta=True,
     )
-    return wav_out
+    return wav_out, consistency_delta
+
+
+def _residual_artifact_proxies(clean: np.ndarray, est: np.ndarray) -> tuple[float, float]:
+    residual = (est - clean).astype(np.float32, copy=False)
+    chunks = chunk_waveform(residual, pad_end=True)
+    if chunks.shape[0] == 0:
+        return float("nan"), float("nan")
+    spec = analysis_stft_chunks(chunks)
+    mag = np.abs(spec).astype(np.float64, copy=False) + 1e-12
+    frame_mean = np.mean(mag, axis=1) + 1e-12
+    frame_peak = np.max(mag, axis=1)
+    crest = float(np.mean(frame_peak / frame_mean))
+    mu = np.mean(mag, axis=1, keepdims=True)
+    var = np.mean((mag - mu) ** 2, axis=1, keepdims=True) + 1e-12
+    fourth = np.mean((mag - mu) ** 4, axis=1, keepdims=True)
+    kurt = float(np.mean(fourth / (var**2)))
+    return crest, kurt
 
 
 def _safe_metric(fn: Callable[[], float]) -> tuple[float, str]:
@@ -229,6 +252,9 @@ def _summary(rows: list[EvalRow]) -> dict:
             "stoi": stats("stoi"),
             "pesq": stats("pesq"),
             "pesq_gain": stats("pesq_gain"),
+            "consistency_proj_mae": stats("consistency_proj_mae"),
+            "residual_crest": stats("residual_crest"),
+            "residual_kurtosis": stats("residual_kurtosis"),
         },
     }
 
@@ -344,8 +370,11 @@ def main() -> None:
             stoi_v,
             pesq_v,
             pesq_gain,
+            consistency_proj_mae,
+            residual_crest,
+            residual_kurtosis,
             peak_ratio,
-        ) = (float("nan"),) * 14
+        ) = (float("nan"),) * 17
         best_lag_samples = 0
         try:
             noisy_wav, _ = load_audio(noisy_path)
@@ -356,7 +385,7 @@ def main() -> None:
 
             noisy = noisy_wav[:L].astype(np.float32, copy=False)
             clean = clean_wav[:L].astype(np.float32, copy=False)
-            enhanced = _enhance_waveform(noisy, model, device, args.log_eps)
+            enhanced, consistency_proj_mae = _enhance_waveform(noisy, model, device, args.log_eps)
             n = min(len(clean), len(enhanced))
             clean = clean[:n]
             noisy = noisy[:n]
@@ -378,6 +407,7 @@ def main() -> None:
             peak_ratio = float(
                 np.max(np.abs(enhanced_eval)) / (np.max(np.abs(noisy_eval)) + 1e-12)
             )
+            residual_crest, residual_kurtosis = _residual_artifact_proxies(clean_eval, enhanced_eval)
 
             clean16 = _to_metric_sr(clean_eval, SR)
             noisy16 = _to_metric_sr(noisy_eval, SR)
@@ -435,6 +465,9 @@ def main() -> None:
             stoi=float(stoi_v),
             pesq=float(pesq_v),
             pesq_gain=float(pesq_gain),
+            consistency_proj_mae=float(consistency_proj_mae),
+            residual_crest=float(residual_crest),
+            residual_kurtosis=float(residual_kurtosis),
             best_lag_samples=int(best_lag_samples),
             peak_ratio=float(peak_ratio),
             status=status,
@@ -448,6 +481,9 @@ def main() -> None:
             f"si_sdr={row.si_sdr_db:.3f} (gain={row.si_sdr_gain_db:.3f}) "
             f"si_snr={row.si_snr_db:.3f} (gain={row.si_snr_gain_db:.3f}) "
             f"lag={row.best_lag_samples} peak_ratio={row.peak_ratio:.3f} "
+            f"cons={row.consistency_proj_mae:.6f} "
+            f"r_crest={row.residual_crest:.2f} "
+            f"r_kurt={row.residual_kurtosis:.2f} "
             f"stoi={row.stoi:.3f} pesq={row.pesq:.3f} "
             f"(noisy={row.noisy_pesq:.3f}, gain={row.pesq_gain:.3f})"
         )
@@ -471,6 +507,7 @@ def main() -> None:
             "max_files": args.max_files,
             "lag_search_max_samples": int(args.lag_search_max_samples),
             "metric_sr": _METRIC_SR,
+            "enforce_stft_consistency": True,
             "torchmetrics_enabled": _HAS_TM,
             "stoi_enabled": _HAS_STOI,
             "pesq_enabled": _HAS_PESQ,
