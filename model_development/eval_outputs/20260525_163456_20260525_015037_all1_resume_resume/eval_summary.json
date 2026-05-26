@@ -1,0 +1,126 @@
+{
+  "config": {
+    "noisy_root": "c:\\SoundMufflerRNN\\data\\test\\noisy_testset_wav",
+    "clean_root": "c:\\SoundMufflerRNN\\data\\test\\clean_testset_wav",
+    "weights": "c:\\SoundMufflerRNN\\model_development\\runs\\20260525_163456_20260525_015037_all1_resume_resume\\best_weights.pt",
+    "out_dir": "c:\\SoundMufflerRNN\\model_development\\eval_outputs\\20260525_163456_20260525_015037_all1_resume_resume",
+    "device": "cuda",
+    "hidden_dim": 128,
+    "num_layers": 3,
+    "log_eps": 1e-08,
+    "max_files": null,
+    "lag_search_max_samples": 0,
+    "metric_sr": 16000,
+    "enforce_stft_consistency": true,
+    "torchmetrics_enabled": true,
+    "stoi_enabled": true,
+    "pesq_enabled": true
+  },
+  "summary": {
+    "total_files": 824,
+    "ok_files": 824,
+    "error_files": 0,
+    "metrics": {
+      "noisy_snr_db": {
+        "count": 824,
+        "mean": 8.394864777674405,
+        "median": 7.130006313323975,
+        "std": 5.612976302038658
+      },
+      "noisy_si_sdr_db": {
+        "count": 824,
+        "mean": 8.393919100255923,
+        "median": 7.181602478027344,
+        "std": 5.614281423657281
+      },
+      "noisy_si_snr_db": {
+        "count": 824,
+        "mean": 8.394320510769742,
+        "median": 7.181709289550781,
+        "std": 5.614304180574545
+      },
+      "snr_db": {
+        "count": 824,
+        "mean": 14.517778702152585,
+        "median": 15.281220436096191,
+        "std": 3.8131761864137887
+      },
+      "si_sdr_db": {
+        "count": 824,
+        "mean": 14.400332167310623,
+        "median": 15.303901195526123,
+        "std": 4.061797052446337
+      },
+      "si_snr_db": {
+        "count": 824,
+        "mean": 14.40086610571852,
+        "median": 15.305855751037598,
+        "std": 4.0619761392694205
+      },
+      "snr_gain_db": {
+        "count": 824,
+        "mean": 6.12291392447818,
+        "median": 6.027801513671875,
+        "std": 3.1981442448682302
+      },
+      "si_sdr_gain_db": {
+        "count": 824,
+        "mean": 6.0064130670547,
+        "median": 5.88899739086628,
+        "std": 3.134107106958744
+      },
+      "si_snr_gain_db": {
+        "count": 824,
+        "mean": 6.006545594948778,
+        "median": 5.8908019214868546,
+        "std": 3.1342078118019776
+      },
+      "noisy_pesq": {
+        "count": 824,
+        "mean": 1.967330538532109,
+        "median": 1.7958170175552368,
+        "std": 0.7510989499773013
+      },
+      "stoi": {
+        "count": 824,
+        "mean": 0.9150615752126849,
+        "median": 0.9296343503181221,
+        "std": 0.06750414671674827
+      },
+      "pesq": {
+        "count": 824,
+        "mean": 2.1011431759711607,
+        "median": 2.045666813850403,
+        "std": 0.6487020717928588
+      },
+      "pesq_gain": {
+        "count": 824,
+        "mean": 0.1338126374390519,
+        "median": 0.13036638498306274,
+        "std": 0.26066283068503976
+      },
+      "consistency_proj_mae": {
+        "count": 824,
+        "mean": 0.002566611387751922,
+        "median": 0.002411470632068813,
+        "std": 0.0012810567134128028
+      },
+      "residual_crest": {
+        "count": 824,
+        "mean": 74.60260304487386,
+        "median": 72.22154839659953,
+        "std": 19.987675951681666
+      },
+      "residual_kurtosis": {
+        "count": 824,
+        "mean": 145.84845784063162,
+        "median": 146.06342621059855,
+        "std": 32.65940435674464
+      }
+    }
+  },
+  "artifacts": {
+    "metrics_csv": "metrics_eval.csv",
+    "summary_json": "eval_summary.json"
+  }
+}
