@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { enhanceAudio } from '../services/enhanceService.js'
 import '../styles/audio-processor-page.css'
 
 const ACCEPT =
@@ -99,7 +100,7 @@ function WaveformStub({ seed, labelId }) {
   )
 }
 
-function OriginalPlayer({ src }) {
+function AudioPlayer({ src }) {
   const audioRef = useRef(null)
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
@@ -192,39 +193,6 @@ function OriginalPlayer({ src }) {
   )
 }
 
-function ProcessedPlayerStub() {
-  return (
-    <div className="audio-processor__player">
-      <div className="audio-processor__player-row">
-        <button
-          type="button"
-          className="audio-processor__play-btn"
-          disabled
-          aria-label="Play (unavailable)"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden fill="currentColor">
-            <path d="M8 5v14l11-7-11-7z" />
-          </svg>
-        </button>
-        <input
-          type="range"
-          className="audio-processor__scrub"
-          min={0}
-          max={1000}
-          value={0}
-          disabled
-          aria-label="Seek"
-          aria-valuemin={0}
-          aria-valuemax={1000}
-          aria-valuenow={0}
-        />
-        <span className="audio-processor__time">0:00 / 0:00</span>
-      </div>
-      <p className="audio-processor__player-hint">Ready when backend connects</p>
-    </div>
-  )
-}
-
 export function DemoPage() {
   const inputId = 'audio-processor-file'
   const [file, setFile] = useState(null)
@@ -232,6 +200,8 @@ export function DemoPage() {
   const [fileError, setFileError] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [isComplete, setIsComplete] = useState(false)
+  const [processedUrl, setProcessedUrl] = useState('')
+  const [processError, setProcessError] = useState('')
 
   const objectUrl = useMemo(
     () => (file ? URL.createObjectURL(file) : ''),
@@ -243,6 +213,12 @@ export function DemoPage() {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [objectUrl])
+
+  useEffect(() => {
+    return () => {
+      if (processedUrl) URL.revokeObjectURL(processedUrl)
+    }
+  }, [processedUrl])
 
   const waveformSeedOriginal = useMemo(
     () =>
@@ -256,12 +232,15 @@ export function DemoPage() {
   )
 
   const resetAll = useCallback(() => {
+    if (processedUrl) URL.revokeObjectURL(processedUrl)
     setFile(null)
     setDragOver(false)
     setFileError('')
     setIsProcessing(false)
     setIsComplete(false)
-  }, [])
+    setProcessedUrl('')
+    setProcessError('')
+  }, [processedUrl])
 
   const pickFile = (f) => {
     if (!f) return
@@ -270,9 +249,12 @@ export function DemoPage() {
       return
     }
     setFileError('')
+    setProcessError('')
+    if (processedUrl) URL.revokeObjectURL(processedUrl)
     setFile(f)
     setIsComplete(false)
     setIsProcessing(false)
+    setProcessedUrl('')
   }
 
   const onInputChange = (e) => {
@@ -287,18 +269,26 @@ export function DemoPage() {
     pickFile(e.dataTransfer.files?.[0])
   }
 
-  const onProcess = () => {
+  const onProcess = async () => {
     if (!file || isProcessing) return
     setIsProcessing(true)
-    const ms = 2000 + Math.random() * 1000
-    window.setTimeout(() => {
+    setProcessError('')
+    try {
+      if (processedUrl) URL.revokeObjectURL(processedUrl)
+      const nextProcessedUrl = await enhanceAudio(file)
+      setProcessedUrl(nextProcessedUrl)
       setIsProcessing(false)
       setIsComplete(true)
-    }, ms)
+    } catch {
+      setIsProcessing(false)
+      setIsComplete(false)
+      setProcessedUrl('')
+      setProcessError('Audio processing failed. Please try again.')
+    }
   }
 
   const showControls = Boolean(file)
-  const showComparison = Boolean(file && isComplete)
+  const showComparison = Boolean(file && isComplete && processedUrl)
 
   return (
     <div className="audio-processor">
@@ -426,6 +416,11 @@ export function DemoPage() {
               )}
             </button>
           </div>
+          {processError ? (
+            <p className="audio-processor__error" role="alert">
+              {processError}
+            </p>
+          ) : null}
         </section>
       ) : null}
 
@@ -446,7 +441,7 @@ export function DemoPage() {
                 seed={waveformSeedOriginal}
                 labelId="wf-orig-title"
               />
-              <OriginalPlayer src={objectUrl} />
+              <AudioPlayer src={objectUrl} />
             </article>
             <article className="audio-processor__card">
               <h3 className="audio-processor__card-title">Processed</h3>
@@ -454,7 +449,7 @@ export function DemoPage() {
                 seed={waveformSeedProcessed}
                 labelId="wf-proc-title"
               />
-              <ProcessedPlayerStub />
+              <AudioPlayer src={processedUrl} />
             </article>
           </div>
         </section>
@@ -465,20 +460,19 @@ export function DemoPage() {
           <h2 id="download-heading" className="audio-processor__sr-input">
             Download
           </h2>
-          <button
-            type="button"
+          <a
+            href={processedUrl}
+            download={`processed-${file?.name || 'audio'}`}
             className="audio-processor__download-btn"
-            disabled
-            aria-disabled="true"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
               <path d="M12 4v12m0 0l-4-4m4 4l4-4" />
               <path d="M4 20h16" />
             </svg>
             Download Processed Audio
-          </button>
+          </a>
           <p className="audio-processor__download-hint">
-            Available once backend is connected.
+            Processed audio is returned directly from backend.
           </p>
         </section>
       ) : null}

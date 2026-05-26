@@ -420,8 +420,21 @@
   font-size: 0.9375rem;
   font-weight: 600;
   background: transparent;
-  color: var(--muted);
-  cursor: not-allowed;
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.audio-processor__download-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: rgba(111, 207, 151, 0.08);
+}
+
+.audio-processor__download-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .audio-processor__download-btn[aria-disabled='true'] {

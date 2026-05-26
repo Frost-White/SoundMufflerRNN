@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    enhance_web_rate_limit: int = 30
+    enhance_web_rate_window_seconds: int = 60
+    enhance_api_rate_limit: int = 120
+    enhance_api_rate_window_seconds: int = 60
 
 
 def get_settings() -> Settings:
