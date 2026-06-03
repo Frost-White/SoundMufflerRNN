@@ -1,5 +1,3 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-
 export async function enhanceAudio(file, onProgress = () => {}) {
   onProgress(20)
 
@@ -7,7 +5,7 @@ export async function enhanceAudio(file, onProgress = () => {}) {
   formData.append('file', file)
   onProgress(55)
 
-  const response = await fetch(`${API_BASE_URL}/enhance/web`, {
+  const response = await fetch('/enhance/web', {
     method: 'POST',
     body: formData,
   })
