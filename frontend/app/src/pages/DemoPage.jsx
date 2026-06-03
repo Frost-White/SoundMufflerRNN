@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DemoSamplesPanel } from '../components/demo/DemoSamplesPanel.jsx'
+import { SAMPLE_AUDIOS } from '../data/sampleAudios.js'
 import { enhanceAudio } from '../services/enhanceService.js'
 import '../styles/audio-processor-page.css'
 
@@ -291,7 +293,13 @@ export function DemoPage() {
   const showComparison = Boolean(file && isComplete && processedUrl)
 
   return (
-    <div className="audio-processor">
+    <div className="demo-page-layout">
+      <DemoSamplesPanel
+        samples={SAMPLE_AUDIOS}
+        selectedFile={file}
+        onSelect={pickFile}
+      />
+      <div className="audio-processor">
       <header className="audio-processor__header">
         <span className="audio-processor__brand">Sound Muffler</span>
         <h1 className="audio-processor__title">Audio Processor</h1>
@@ -476,6 +484,7 @@ export function DemoPage() {
           </p>
         </section>
       ) : null}
+      </div>
     </div>
   )
 }

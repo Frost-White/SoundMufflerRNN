@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState } from 'react'
+import { useCallback, useId, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { apiFetch } from '../../services/api.js'
@@ -137,8 +137,6 @@ export function RegisterForm() {
 
   const [errors, setErrors] = useState({})
   const [submitting, setSubmitting] = useState(false)
-  const [socialHint, setSocialHint] = useState(null)
-  const socialTimerRef = useRef(null)
 
   const strength = getPasswordStrength(password)
 
@@ -194,15 +192,6 @@ export function RegisterForm() {
     } finally {
       setSubmitting(false)
     }
-  }
-
-  const onSocialClick = () => {
-    if (socialTimerRef.current) window.clearTimeout(socialTimerRef.current)
-    setSocialHint(true)
-    socialTimerRef.current = window.setTimeout(() => {
-      setSocialHint(null)
-      socialTimerRef.current = null
-    }, 3200)
   }
 
   const strengthClass =
@@ -441,56 +430,6 @@ export function RegisterForm() {
             <span className="visually-hidden">Loading</span>
           </span>
         </button>
-
-        <div className="register-form__divider">
-          <span>or continue with</span>
-        </div>
-
-        <div className="register-form__social-wrap">
-          <p className="register-form__social-hint" role="status">
-            {socialHint ? 'Social login coming soon' : '\u00a0'}
-          </p>
-          <div className="register-form__social">
-            <button
-              type="button"
-              className="register-form__social-btn"
-              onClick={() => onSocialClick()}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="#EA4335"
-                  d="M12 10.2v3.7h5.1c-.2 1.1-.9 2.1-1.9 2.7l3 2.3c1.8-1.6 2.8-4 2.8-6.8 0-.7-.1-1.3-.2-1.9H12z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 22c2.4 0 4.5-.8 6-2.2l-3-2.3c-.8.6-1.9 1-3.1 1-2.4 0-4.4-1.6-5.1-3.8H3.1v2.3C4.6 20 8 22 12 22z"
-                />
-                <path
-                  fill="#4A90E2"
-                  d="M6.9 14.7c-.2-.6-.3-1.2-.3-1.7s.1-1.2.3-1.7l-3.1-2.4C2.8 10.5 2.4 11.2 2 12c0 2.2.9 4.2 2.4 5.7l3.5-3z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M12 5.4c1.3 0 2.5.4 3.4 1.2l2.6-2.6C16.5 2.6 14.4 1.7 12 1.7 8 1.7 4.6 3.7 3.1 7.2l3.5 2.7c.7-2.2 2.7-3.8 5.4-3.8z"
-                />
-              </svg>
-              Google
-            </button>
-            <button
-              type="button"
-              className="register-form__social-btn"
-              onClick={() => onSocialClick()}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="currentColor"
-                  d="M12 .5C5.65.5.5 5.65.5 12c0 5.18 3.36 9.57 8 11.15.58.1.8-.25.8-.56 0-.28 0-1.02 0-2-3.25.7-3.94-1.56-3.94-1.56-.53-1.35-1.3-1.7-1.3-1.7-1.08-.74.08-.72.08-.72 1.2.08 1.84 1.23 1.84 1.23 1.07 1.84 2.8 1.3 3.48 1 .1-.78.42-1.3.76-1.6-2.6-.3-5.33-1.3-5.33-5.8 0-1.28.46-2.33 1.2-3.15-.12-.3-.52-1.52.12-3.18 0 0 1-.32 3.3 1.2a11.5 11.5 0 013-.4c1.02 0 2.04.14 3 .4 2.28-1.52 3.28-1.2 3.28-1.2.64 1.66.24 2.88.12 3.18.76.82 1.2 1.87 1.2 3.15 0 4.52-2.74 5.5-5.36 5.78.42.36.8 1.08.8 2.18 0 1.57-.02 2.84-.02 3.23 0 .31.2.67.8.55A11.48 11.48 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"
-                />
-              </svg>
-              GitHub
-            </button>
-          </div>
-        </div>
 
         <p className="register-form__footer">
           © 2026 Sound Muffler ·{' '}
