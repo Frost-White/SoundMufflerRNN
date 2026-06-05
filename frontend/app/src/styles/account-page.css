@@ -878,6 +878,68 @@
   font-size: 0.875rem;
 }
 
+.account-modal__input--invalid {
+  border-color: #e5534b;
+}
+
+.account-modal__input--valid {
+  border-color: #3d9a6f;
+}
+
+.account-modal__field--row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+
+.account-card-input-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.account-card-input-row .account-modal__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-card-input-row__badge {
+  flex-shrink: 0;
+}
+
+.account-card-input-row__badge--muted {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: auto;
+  min-height: 2.25rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--account-muted-bg);
+  border: 1px dashed var(--account-border);
+}
+
+.account-field-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.account-field-hint--ok {
+  color: #3d9a6f;
+}
+
+.account-field-error {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: #e5534b;
+  line-height: 1.35;
+}
+
 .account-modal__actions {
   display: flex;
   justify-content: flex-end;

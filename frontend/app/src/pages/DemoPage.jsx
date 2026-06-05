@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { DemoSamplesPanel } from '../components/demo/DemoSamplesPanel.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
 import { SAMPLE_AUDIOS } from '../data/sampleAudios.js'
 import { enhanceAudio } from '../services/enhanceService.js'
+import { MAX_AUDIO_FILE_BYTES } from '../utils/fileValidation.js'
 import '../styles/audio-processor-page.css'
 
 const ACCEPT =
@@ -9,6 +12,8 @@ const ACCEPT =
 
 const INVALID_FILE_MESSAGE =
   'This file type is not supported. Please use MP3, WAV, or OGG.'
+
+const FILE_TOO_LARGE_MESSAGE = 'File size must be 2 MB or smaller.'
 
 function isAllowedAudioFile(file) {
   const name = file.name.toLowerCase()
@@ -196,6 +201,7 @@ function AudioPlayer({ src }) {
 }
 
 export function DemoPage() {
+  const { isLoggedIn } = useAuth()
   const inputId = 'audio-processor-file'
   const [file, setFile] = useState(null)
   const [dragOver, setDragOver] = useState(false)
@@ -250,6 +256,10 @@ export function DemoPage() {
       setFileError(INVALID_FILE_MESSAGE)
       return
     }
+    if (f.size > MAX_AUDIO_FILE_BYTES) {
+      setFileError(FILE_TOO_LARGE_MESSAGE)
+      return
+    }
     setFileError('')
     setProcessError('')
     if (processedUrl) URL.revokeObjectURL(processedUrl)
@@ -273,6 +283,10 @@ export function DemoPage() {
 
   const onProcess = async () => {
     if (!file || isProcessing) return
+    if (!isLoggedIn) {
+      setProcessError('Please sign in to process audio.')
+      return
+    }
     setIsProcessing(true)
     setProcessError('')
     try {
@@ -281,11 +295,16 @@ export function DemoPage() {
       setProcessedUrl(nextProcessedUrl)
       setIsProcessing(false)
       setIsComplete(true)
-    } catch {
+    } catch (err) {
       setIsProcessing(false)
       setIsComplete(false)
       setProcessedUrl('')
-      setProcessError('Audio processing failed. Please try again.')
+      const msg = err instanceof Error ? err.message : ''
+      setProcessError(
+        msg === 'Please sign in to process audio.'
+          ? msg
+          : 'Audio processing failed. Please try again.',
+      )
     }
   }
 
@@ -363,7 +382,7 @@ export function DemoPage() {
                 Drop your audio file here
               </p>
               <p className="audio-processor__drop-sub">
-                or click to browse — supports MP3, WAV, OGG
+                or click to browse — MP3, WAV, OGG, max 2 MB
               </p>
             </div>
           </label>
@@ -402,14 +421,21 @@ export function DemoPage() {
             Process audio
           </h2>
           <p className="audio-processor__hint">
-            Noise cancellation runs when you process your file.
+            {isLoggedIn ? (
+              'Noise cancellation runs when you process your file.'
+            ) : (
+              <>
+                <Link to="/login">Sign in</Link> or{' '}
+                <Link to="/register">create an account</Link> to process audio.
+              </>
+            )}
           </p>
           <div className="audio-processor__process-wrap">
             <button
               type="button"
               className={`audio-processor__process-btn ${isProcessing ? 'audio-processor__process-btn--loading' : ''}`}
               onClick={onProcess}
-              disabled={isProcessing || isComplete}
+              disabled={isProcessing || isComplete || !isLoggedIn}
               aria-busy={isProcessing}
             >
               {isProcessing ? (

@@ -39,6 +39,8 @@ class SubscriptionOut(BaseModel):
     current_period_start: datetime
     current_period_end: datetime
     cancel_at_period_end: bool
+    scheduled_plan_id: str | None = None
+    scheduled_plan_display_name: str | None = None
 
 
 class SubscriptionPatch(BaseModel):

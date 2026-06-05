@@ -9,9 +9,9 @@ from app.services.rate_limit import InMemoryRateLimiter
 
 
 def test_settings_override_from_code() -> None:
-    settings = Settings(jwt_secret="root-test-secret", enhance_api_rate_limit=9)
+    settings = Settings(jwt_secret="root-test-secret", enhance_api_pro_rate_limit=9)
     assert settings.jwt_secret == "root-test-secret"
-    assert settings.enhance_api_rate_limit == 9
+    assert settings.enhance_api_pro_rate_limit == 9
 
 
 def test_rate_limiter_blocks_after_limit() -> None:

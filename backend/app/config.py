@@ -11,8 +11,11 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     enhance_web_rate_limit: int = 30
     enhance_web_rate_window_seconds: int = 60
-    enhance_api_rate_limit: int = 120
-    enhance_api_rate_window_seconds: int = 60
+    enhance_api_free_rate_limit: int = 30
+    enhance_api_free_rate_window_seconds: int = 900
+    enhance_api_pro_rate_limit: int = 15
+    enhance_api_pro_rate_window_seconds: int = 60
+    enhance_max_upload_bytes: int = 2 * 1024 * 1024
 
 
 def get_settings() -> Settings:

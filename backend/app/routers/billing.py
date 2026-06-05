@@ -19,6 +19,16 @@ from app.schemas import (
 
 router = APIRouter()
 
+_PLAN_TIER = {"free": 0, "pro": 1}
+
+
+def _plan_tier(plan_id: str) -> int:
+    return _PLAN_TIER.get(plan_id, 0)
+
+
+def _is_downgrade(from_plan: str, to_plan: str) -> bool:
+    return _plan_tier(to_plan) < _plan_tier(from_plan)
+
 
 def _price_to_usd_month(plan: SubscriptionPlan) -> float | None:
     if plan.price_cents is None:
@@ -28,6 +38,60 @@ def _price_to_usd_month(plan: SubscriptionPlan) -> float | None:
 
 def _format_expiry(pm: PaymentMethod) -> str:
     return f"{pm.exp_month:02d}/{str(pm.exp_year)[-2:]}"
+
+
+def _advance_free_period(sub: UserSubscription) -> None:
+    sub.current_period_start = sub.current_period_end
+    sub.current_period_end = sub.current_period_end + timedelta(days=30)
+
+
+def _apply_pending_period_changes(sub: UserSubscription) -> None:
+    now = datetime.now(UTC)
+    if now < sub.current_period_end:
+        return
+
+    if sub.scheduled_plan_id:
+        sub.plan_id = sub.scheduled_plan_id
+        sub.scheduled_plan_id = None
+        sub.cancel_at_period_end = False
+        sub.status = "active"
+        if sub.plan_id == "free":
+            _advance_free_period(sub)
+        else:
+            sub.current_period_start = now
+            sub.current_period_end = now + timedelta(days=30)
+        return
+
+    if sub.cancel_at_period_end and sub.plan_id == "pro":
+        sub.plan_id = "free"
+        sub.cancel_at_period_end = False
+        sub.scheduled_plan_id = None
+        sub.status = "active"
+        _advance_free_period(sub)
+
+
+def _subscription_out(sub: UserSubscription, db: Session) -> SubscriptionOut:
+    plan = db.get(SubscriptionPlan, sub.plan_id)
+    if plan is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Plan missing")
+
+    scheduled_name: str | None = None
+    if sub.scheduled_plan_id:
+        scheduled_plan = db.get(SubscriptionPlan, sub.scheduled_plan_id)
+        scheduled_name = scheduled_plan.display_name if scheduled_plan else sub.scheduled_plan_id
+
+    return SubscriptionOut(
+        plan_id=plan.id,
+        plan_display_name=plan.display_name,
+        billing_cycle="Monthly" if plan.billing_interval == "month" else plan.billing_interval,
+        price_usd_per_month=_price_to_usd_month(plan),
+        status=sub.status,
+        current_period_start=sub.current_period_start,
+        current_period_end=sub.current_period_end,
+        cancel_at_period_end=sub.cancel_at_period_end,
+        scheduled_plan_id=sub.scheduled_plan_id,
+        scheduled_plan_display_name=scheduled_name,
+    )
 
 
 def _payment_methods_for_user(db: Session, user: User) -> list[PaymentMethodOut]:
@@ -59,19 +123,11 @@ def get_subscription(
     ).first()
     if sub is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription")
-    plan = db.get(SubscriptionPlan, sub.plan_id)
-    if plan is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Plan missing")
-    return SubscriptionOut(
-        plan_id=plan.id,
-        plan_display_name=plan.display_name,
-        billing_cycle="Monthly" if plan.billing_interval == "month" else plan.billing_interval,
-        price_usd_per_month=_price_to_usd_month(plan),
-        status=sub.status,
-        current_period_start=sub.current_period_start,
-        current_period_end=sub.current_period_end,
-        cancel_at_period_end=sub.cancel_at_period_end,
-    )
+    _apply_pending_period_changes(sub)
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    return _subscription_out(sub, db)
 
 
 @router.patch("/subscription", response_model=SubscriptionOut)
@@ -86,39 +142,42 @@ def patch_subscription(
     if sub is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription")
 
+    _apply_pending_period_changes(sub)
+
     if body.plan_id is not None:
         plan = db.get(SubscriptionPlan, body.plan_id)
         if plan is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid plan_id")
-        sub.plan_id = body.plan_id
-        if body.plan_id == "free":
+
+        if body.plan_id == sub.plan_id:
+            sub.scheduled_plan_id = None
+            if body.plan_id == "pro":
+                sub.cancel_at_period_end = False
+        elif _is_downgrade(sub.plan_id, body.plan_id):
+            sub.scheduled_plan_id = body.plan_id
+            sub.cancel_at_period_end = False
+        else:
+            sub.plan_id = body.plan_id
+            sub.scheduled_plan_id = None
             sub.cancel_at_period_end = False
             sub.status = "active"
-        else:
             sub.current_period_start = datetime.now(UTC)
             sub.current_period_end = datetime.now(UTC) + timedelta(days=30)
-            sub.cancel_at_period_end = False
-            sub.status = "active"
 
     if body.cancel_at_period_end is not None:
+        if body.cancel_at_period_end and sub.plan_id == "free":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Free plan cannot be canceled",
+            )
+        if body.cancel_at_period_end:
+            sub.scheduled_plan_id = None
         sub.cancel_at_period_end = body.cancel_at_period_end
 
     db.add(sub)
     db.commit()
     db.refresh(sub)
-
-    plan = db.get(SubscriptionPlan, sub.plan_id)
-    assert plan is not None
-    return SubscriptionOut(
-        plan_id=plan.id,
-        plan_display_name=plan.display_name,
-        billing_cycle="Monthly" if plan.billing_interval == "month" else plan.billing_interval,
-        price_usd_per_month=_price_to_usd_month(plan),
-        status=sub.status,
-        current_period_start=sub.current_period_start,
-        current_period_end=sub.current_period_end,
-        cancel_at_period_end=sub.cancel_at_period_end,
-    )
+    return _subscription_out(sub, db)
 
 
 @router.get("/payment-methods", response_model=list[PaymentMethodOut])

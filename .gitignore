@@ -5,5 +5,8 @@ __pycache__/
 .venv/
 .env
 backend/.env
+frontend/app/.env
+*.pem
+*.key
 # Optional: keep folder structure with a placeholder file if needed
 #!data/.gitkeep

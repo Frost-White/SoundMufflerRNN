@@ -17,21 +17,42 @@ services:
   backend:
     build:
       context: ./backend
+    # Localhost only — public traffic goes through frontend :8080 (nginx → backend).
+    ports:
+      - "127.0.0.1:8000:8000"
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/soundmuffler
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production-use-long-random-string}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
+      ENHANCE_WEB_RATE_LIMIT: ${ENHANCE_WEB_RATE_LIMIT:-30}
+      ENHANCE_WEB_RATE_WINDOW_SECONDS: ${ENHANCE_WEB_RATE_WINDOW_SECONDS:-60}
+      ENHANCE_API_FREE_RATE_LIMIT: ${ENHANCE_API_FREE_RATE_LIMIT:-30}
+      ENHANCE_API_FREE_RATE_WINDOW_SECONDS: ${ENHANCE_API_FREE_RATE_WINDOW_SECONDS:-900}
+      ENHANCE_API_PRO_RATE_LIMIT: ${ENHANCE_API_PRO_RATE_LIMIT:-15}
+      ENHANCE_API_PRO_RATE_WINDOW_SECONDS: ${ENHANCE_API_PRO_RATE_WINDOW_SECONDS:-60}
+      ENHANCE_MAX_UPLOAD_BYTES: ${ENHANCE_MAX_UPLOAD_BYTES:-2097152}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - "8000:8000"
 
   frontend:
     build:
       context: ./frontend/app
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "8080:80"
 

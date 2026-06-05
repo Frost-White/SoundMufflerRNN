@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { apiFetch } from '../services/api.js'
+import {
+  cardNumberErrorMessage,
+  cvcErrorMessage,
+  detectCardBrand,
+  expiryErrorMessage,
+  formatCardNumberInput,
+  formatExpiryInput,
+  parseExpiryInput,
+  validateCardNumber,
+  validateCvc,
+  validateExpiry,
+} from '../utils/cardValidation.js'
 import '../styles/account-page.css'
 
 function useFocusTrap(containerRef, active) {
@@ -148,32 +160,6 @@ function formatLocaleDate(isoOrDate) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-function guessBrand(digits) {
-  const d = digits.replace(/\D/g, '')
-  if (!d.length) return 'visa'
-  if (d[0] === '5') return 'mastercard'
-  return 'visa'
-}
-
-function parseExpiryInput(exp) {
-  const cleaned = exp.trim().replace(/\s/g, '')
-  const slash = cleaned.split('/')
-  if (slash.length >= 2) {
-    const mm = parseInt(slash[0], 10)
-    let yy = parseInt(slash[1], 10)
-    if (yy < 100) yy += 2000
-    if (mm >= 1 && mm <= 12 && yy >= 2000) return { exp_month: mm, exp_year: yy }
-  }
-  const compact = cleaned.replace(/\D/g, '')
-  if (compact.length >= 4) {
-    const mm = parseInt(compact.slice(0, 2), 10)
-    let yy = parseInt(compact.slice(2, 4), 10)
-    yy += 2000
-    if (mm >= 1 && mm <= 12) return { exp_month: mm, exp_year: yy }
-  }
-  return null
-}
-
 const NAV = [
   { id: 'account', label: 'Account', icon: IconAccount },
   { id: 'billing', label: 'Billing', icon: IconBilling },
@@ -181,9 +167,24 @@ const NAV = [
 ]
 
 const PLAN_OPTIONS = [
-  { id: 'free', name: 'Free', price: '$0/mo', blurb: 'For individuals and light use.' },
-  { id: 'pro', name: 'Pro', price: '$10/mo', blurb: 'Unlimited projects and API access.' },
-  { id: 'enterprise', name: 'Enterprise', price: 'Custom', blurb: 'SLA, SSO, and dedicated support.' },
+  {
+    id: 'free',
+    name: 'Free',
+    price: '$0/mo',
+    blurb: 'For individuals and light use. API: 30 requests per 15 minutes per key.',
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    price: '$10/mo',
+    blurb: 'Unlimited projects and full API access. API: 15 requests per minute per key.',
+  },
+  {
+    id: 'enterprise',
+    name: 'Enterprise',
+    price: 'Custom',
+    blurb: 'SLA, SSO, dedicated support, and custom API rate limits.',
+  },
 ]
 
 export function AccountPage() {
@@ -219,6 +220,22 @@ export function AccountPage() {
   const [cardNumber, setCardNumber] = useState('')
   const [cardExpiry, setCardExpiry] = useState('')
   const [cardCvc, setCardCvc] = useState('')
+  const [addCardAttempted, setAddCardAttempted] = useState(false)
+  const [addCardSaveError, setAddCardSaveError] = useState(null)
+
+  const addCardValidation = useMemo(
+    () => ({
+      number: validateCardNumber(cardNumber),
+      expiry: validateExpiry(cardExpiry),
+      cvc: validateCvc(cardCvc),
+    }),
+    [cardNumber, cardExpiry, cardCvc],
+  )
+
+  const addCardFormValid =
+    addCardValidation.number.ok && addCardValidation.expiry.ok && addCardValidation.cvc.ok
+
+  const cardBrandPreview = detectCardBrand(cardNumber)
 
   const [apiKeys, setApiKeys] = useState([])
   const [revokeKeyId, setRevokeKeyId] = useState(null)
@@ -238,6 +255,7 @@ export function AccountPage() {
   const [planModalOpen, setPlanModalOpen] = useState(false)
   const [planChangeLoading, setPlanChangeLoading] = useState(false)
   const [planChangeDone, setPlanChangeDone] = useState(false)
+  const [planChangeNotice, setPlanChangeNotice] = useState('')
   const [cancelSubConfirm, setCancelSubConfirm] = useState(false)
 
   const refreshAccount = useCallback(async () => {
@@ -292,6 +310,8 @@ export function AccountPage() {
     setAddCardOpen(false)
     setAddCardLoading(false)
     setAddCardSuccess(false)
+    setAddCardAttempted(false)
+    setAddCardSaveError(null)
     setCardNumber('')
     setCardExpiry('')
     setCardCvc('')
@@ -324,27 +344,59 @@ export function AccountPage() {
     setPlanModalOpen(false)
     setPlanChangeLoading(false)
     setPlanChangeDone(false)
+    setPlanChangeNotice('')
     setPlanActionError(null)
   }, [])
 
   const openPlanModal = useCallback(() => {
     setPlanChangeLoading(false)
     setPlanChangeDone(false)
+    setPlanChangeNotice('')
     setPlanActionError(null)
     setPlanModalOpen(true)
   }, [])
+
+  const keepProSubscription = useCallback(async () => {
+    setCancelSubConfirm(false)
+    setPlanActionError(null)
+    setPlanChangeLoading(true)
+    try {
+      await apiFetch('/billing/subscription', {
+        method: 'PATCH',
+        body: JSON.stringify({ plan_id: 'pro', cancel_at_period_end: false }),
+      })
+      await refreshAccount()
+    } catch (e) {
+      setPlanActionError(e instanceof Error ? e.message : 'Could not update subscription')
+    } finally {
+      setPlanChangeLoading(false)
+    }
+  }, [refreshAccount])
 
   const stubPlanChange = useCallback(
     async (planId) => {
       setPlanChangeLoading(true)
       setPlanChangeDone(false)
+      setPlanChangeNotice('')
       setPlanActionError(null)
       try {
-        await apiFetch('/billing/subscription', {
+        const updated = await apiFetch('/billing/subscription', {
           method: 'PATCH',
           body: JSON.stringify({ plan_id: planId }),
         })
         await refreshAccount()
+        if (updated?.scheduled_plan_id) {
+          const when = formatLocaleDate(updated.current_period_end)
+          const name = updated.scheduled_plan_display_name ?? updated.scheduled_plan_id
+          setPlanChangeNotice(`Your plan will change to ${name} on ${when}.`)
+        } else if (
+          subscription?.scheduled_plan_id &&
+          updated?.plan_id === subscription?.plan_id
+        ) {
+          setPlanChangeNotice('Scheduled plan change canceled.')
+        } else {
+          setPlanChangeNotice('Plan updated.')
+        }
         setPlanChangeDone(true)
       } catch (e) {
         setPlanActionError(e instanceof Error ? e.message : 'Could not update plan')
@@ -453,19 +505,21 @@ export function AccountPage() {
   ])
 
   const onSaveCardStub = async () => {
+    setAddCardAttempted(true)
+    setAddCardSaveError(null)
+    if (!addCardFormValid) return
+
     const digits = cardNumber.replace(/\D/g, '')
     const last4 = digits.slice(-4)
     const exp = parseExpiryInput(cardExpiry)
-    if (last4.length !== 4 || !exp) {
-      return
-    }
+    const brand = addCardValidation.number.brand
     setAddCardLoading(true)
     setAddCardSuccess(false)
     try {
       await apiFetch('/billing/payment-methods', {
         method: 'POST',
         body: JSON.stringify({
-          brand: guessBrand(digits),
+          brand,
           last4,
           exp_month: exp.exp_month,
           exp_year: exp.exp_year,
@@ -473,8 +527,9 @@ export function AccountPage() {
       })
       await refreshAccount()
       setAddCardSuccess(true)
-    } catch {
+    } catch (e) {
       setAddCardSuccess(false)
+      setAddCardSaveError(e instanceof Error ? e.message : 'Could not save card')
     } finally {
       setAddCardLoading(false)
     }
@@ -536,6 +591,9 @@ export function AccountPage() {
   const displayName = user?.name?.trim() || 'Demo User'
   const displayEmail = user?.email?.trim() || 'you@example.com'
   const renewsOn = subscription ? formatLocaleDate(subscription.current_period_end) : '—'
+  const proPendingChange =
+    subscription?.plan_id === 'pro' &&
+    Boolean(subscription?.cancel_at_period_end || subscription?.scheduled_plan_id)
   const priceLabel =
     subscription == null
       ? '—'
@@ -709,11 +767,13 @@ export function AccountPage() {
                     <p className="account-plan-mgmt__title">{subscription?.plan_display_name ?? '…'}</p>
                   </div>
                   <span className="account-badge">
-                    {subscription?.status === 'active' && !subscription?.cancel_at_period_end
-                      ? 'Active'
-                      : subscription?.cancel_at_period_end
-                        ? 'Canceling'
-                        : subscription?.status ?? '—'}
+                    {subscription?.scheduled_plan_id
+                      ? 'Change scheduled'
+                      : subscription?.status === 'active' && !subscription?.cancel_at_period_end
+                        ? 'Active'
+                        : subscription?.cancel_at_period_end
+                          ? 'Canceling'
+                          : subscription?.status ?? '—'}
                   </span>
                 </div>
                 <dl className="account-plan-mgmt__dl">
@@ -726,60 +786,87 @@ export function AccountPage() {
                     <dd>{priceLabel}</dd>
                   </div>
                   <div>
-                    <dt>Renews on</dt>
+                    <dt>{subscription?.scheduled_plan_id ? 'Plan changes on' : 'Renews on'}</dt>
                     <dd>{renewsOn}</dd>
                   </div>
                 </dl>
+                {subscription?.scheduled_plan_id ? (
+                  <p className="account-page__stub-note" role="status">
+                    Switching to {subscription.scheduled_plan_display_name ?? subscription.scheduled_plan_id}{' '}
+                    on {renewsOn}. You keep {subscription.plan_display_name} until then. Use Keep Pro
+                    subscription to cancel this change.
+                  </p>
+                ) : null}
                 <div className="account-plan-mgmt__actions">
                   <button type="button" className="account-btn account-btn--primary" onClick={openPlanModal}>
                     Change plan
                   </button>
-                  {cancelSubConfirm ? (
-                    <div className="account-plan-mgmt__confirm" role="status" aria-live="polite">
-                      <span className="account-plan-mgmt__confirm-text">End subscription after this period?</span>
+                  {subscription?.plan_id === 'pro' ? (
+                    proPendingChange ? (
                       <button
                         type="button"
-                        className="account-btn account-btn--danger"
-                        onClick={async () => {
-                          setCancelSubConfirm(false)
-                          setPlanActionError(null)
-                          try {
-                            await apiFetch('/billing/subscription', {
-                              method: 'PATCH',
-                              body: JSON.stringify({ cancel_at_period_end: true }),
-                            })
-                            await refreshAccount()
-                          } catch (e) {
-                            setPlanActionError(
-                              e instanceof Error ? e.message : 'Could not update subscription',
-                            )
-                          }
-                        }}
+                        className="account-btn account-btn--primary"
+                        disabled={planChangeLoading}
+                        onClick={keepProSubscription}
                       >
-                        Yes
+                        {planChangeLoading ? (
+                          <>
+                            <span className="account-btn__spinner" aria-hidden />
+                            <span className="sr-only">Saving</span>
+                          </>
+                        ) : (
+                          'Keep Pro subscription'
+                        )}
                       </button>
+                    ) : cancelSubConfirm ? (
+                      <div className="account-plan-mgmt__confirm" role="status" aria-live="polite">
+                        <span className="account-plan-mgmt__confirm-text">
+                          End subscription after this period?
+                        </span>
+                        <button
+                          type="button"
+                          className="account-btn account-btn--danger"
+                          onClick={async () => {
+                            setCancelSubConfirm(false)
+                            setPlanActionError(null)
+                            try {
+                              await apiFetch('/billing/subscription', {
+                                method: 'PATCH',
+                                body: JSON.stringify({ cancel_at_period_end: true }),
+                              })
+                              await refreshAccount()
+                            } catch (e) {
+                              setPlanActionError(
+                                e instanceof Error ? e.message : 'Could not update subscription',
+                              )
+                            }
+                          }}
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          className="account-btn account-btn--ghost"
+                          onClick={() => setCancelSubConfirm(false)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
                       <button
                         type="button"
                         className="account-btn account-btn--ghost"
-                        onClick={() => setCancelSubConfirm(false)}
+                        onClick={() => setCancelSubConfirm(true)}
                       >
-                        Cancel
+                        Cancel subscription
                       </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      className="account-btn account-btn--ghost"
-                      onClick={() => setCancelSubConfirm(true)}
-                      disabled={Boolean(subscription?.cancel_at_period_end)}
-                    >
-                      Cancel subscription
-                    </button>
-                  )}
+                    )
+                  ) : null}
                 </div>
-                {subscription?.cancel_at_period_end ? (
+                {subscription?.plan_id === 'pro' && subscription?.cancel_at_period_end ? (
                   <p className="account-page__stub-note" role="status" aria-live="polite">
-                    Cancellation scheduled for the end of this billing period.
+                    Cancellation scheduled for the end of this billing period. Use Keep Pro subscription to
+                    stay on Pro.
                   </p>
                 ) : null}
               </div>
@@ -884,6 +971,8 @@ export function AccountPage() {
                 className="account-btn account-btn--dashed"
                 onClick={() => {
                   setAddCardSuccess(false)
+                  setAddCardAttempted(false)
+                  setAddCardSaveError(null)
                   setAddCardOpen(true)
                 }}
               >
@@ -902,6 +991,11 @@ export function AccountPage() {
               </h1>
               <p className="account-page__lead">
                 Use these keys to authenticate requests to the API. Keep them secret.
+              </p>
+              <p className="account-page__lead account-page__lead--compact">
+                {subscription?.plan_id === 'pro'
+                  ? 'Pro API quota: 15 requests per minute per key.'
+                  : 'Free API quota: 30 requests per 15 minutes per key. Upgrade to Pro for 15 requests per minute.'}
               </p>
 
               <div className="account-warn-banner">
@@ -1073,19 +1167,25 @@ export function AccountPage() {
             ) : null}
             <div className="account-plan-picker">
               {PLAN_OPTIONS.map((opt) => {
-                const isCurrent = subscription?.plan_id === opt.id
+                const isScheduled = subscription?.scheduled_plan_id === opt.id
+                const isCurrent =
+                  subscription?.plan_id === opt.id && !isScheduled
+                const hasPendingChange = Boolean(subscription?.scheduled_plan_id)
+                const isLockedCurrent =
+                  subscription?.plan_id === opt.id && !hasPendingChange
                 return (
                 <button
                   key={opt.id}
                   type="button"
-                  className={`account-plan-picker__tier ${isCurrent ? 'is-current' : ''}`}
-                  disabled={planChangeLoading || isCurrent}
+                  className={`account-plan-picker__tier ${isCurrent || isScheduled ? 'is-current' : ''}`}
+                  disabled={planChangeLoading || isLockedCurrent || opt.id === 'enterprise'}
                   onClick={() => stubPlanChange(opt.id)}
                 >
                   <div className="account-plan-picker__tier-head">
                     <span className="account-plan-picker__tier-name">{opt.name}</span>
                     <span className="account-plan-picker__tier-meta">
                       {isCurrent ? <span className="account-badge">Current</span> : null}
+                      {isScheduled ? <span className="account-badge">Scheduled</span> : null}
                       <span className="account-plan-picker__tier-price">{opt.price}</span>
                     </span>
                   </div>
@@ -1102,9 +1202,9 @@ export function AccountPage() {
                 </span>
               </p>
             )}
-            {planChangeDone ? (
+            {planChangeDone && planChangeNotice ? (
               <p className="account-page__stub-note" role="status" aria-live="polite">
-                Plan updated.
+                {planChangeNotice}
               </p>
             ) : null}
             <div className="account-modal__actions">
@@ -1129,33 +1229,98 @@ export function AccountPage() {
             <h2 id={`${baseId}-add-card-title`} className="account-modal__title">
               Add payment method
             </h2>
+            <p className="account-page__lead account-page__lead--compact">
+              Visa and Mastercard only. We store masked card metadata, not the full number.
+            </p>
             <div className="account-modal__field">
               <label className="account-modal__label" htmlFor={`${baseId}-cn`}>
                 Card number
               </label>
-              <input
-                id={`${baseId}-cn`}
-                className="account-modal__input"
-                inputMode="numeric"
-                autoComplete="cc-number"
-                placeholder="4242 4242 4242 4242"
-                value={cardNumber}
-                onChange={(e) => setCardNumber(e.target.value)}
-              />
+              <div className="account-card-input-row">
+                <input
+                  id={`${baseId}-cn`}
+                  className={`account-modal__input${
+                    addCardAttempted && !addCardValidation.number.ok
+                      ? ' account-modal__input--invalid'
+                      : addCardValidation.number.ok
+                        ? ' account-modal__input--valid'
+                        : ''
+                  }`}
+                  inputMode="numeric"
+                  autoComplete="cc-number"
+                  placeholder="4242 4242 4242 4242"
+                  aria-invalid={addCardAttempted && !addCardValidation.number.ok}
+                  aria-describedby={`${baseId}-cn-hint ${baseId}-cn-err`}
+                  value={cardNumber}
+                  onChange={(e) => setCardNumber(formatCardNumberInput(e.target.value))}
+                  onBlur={() => setAddCardAttempted(true)}
+                />
+                {cardBrandPreview === 'visa' || cardBrandPreview === 'mastercard' ? (
+                  <span
+                    className={`brand-badge brand-badge--${cardBrandPreview} account-card-input-row__badge`}
+                    aria-hidden
+                  >
+                    {cardBrandPreview === 'visa' ? 'VISA' : 'MC'}
+                  </span>
+                ) : (
+                  <span className="account-card-input-row__badge account-card-input-row__badge--muted" aria-hidden>
+                    —
+                  </span>
+                )}
+              </div>
+              {cardBrandPreview === 'unknown' && cardNumber.replace(/\D/g, '').length >= 2 ? (
+                <p id={`${baseId}-cn-hint`} className="account-field-hint">
+                  Unrecognized card type — use Visa (starts with 4) or Mastercard (51–55 or 22–27).
+                </p>
+              ) : addCardValidation.number.ok ? (
+                <p id={`${baseId}-cn-hint`} className="account-field-hint account-field-hint--ok">
+                  {cardBrandPreview === 'mastercard' ? 'Mastercard' : 'Visa'} · number checks out
+                </p>
+              ) : (
+                <p id={`${baseId}-cn-hint`} className="account-field-hint">
+                  {cardBrandPreview === 'visa'
+                    ? 'Visa'
+                    : cardBrandPreview === 'mastercard'
+                      ? 'Mastercard'
+                      : '16-digit card number'}
+                </p>
+              )}
+              {addCardAttempted && cardNumberErrorMessage(addCardValidation.number) ? (
+                <p id={`${baseId}-cn-err`} className="account-field-error" role="alert">
+                  {cardNumberErrorMessage(addCardValidation.number)}
+                </p>
+              ) : null}
             </div>
-            <div className="account-modal__field" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem' }}>
+            <div
+              className="account-modal__field account-modal__field--row"
+            >
               <div>
                 <label className="account-modal__label" htmlFor={`${baseId}-exp`}>
                   Expiry
                 </label>
                 <input
                   id={`${baseId}-exp`}
-                  className="account-modal__input"
+                  className={`account-modal__input${
+                    addCardAttempted && !addCardValidation.expiry.ok
+                      ? ' account-modal__input--invalid'
+                      : addCardValidation.expiry.ok
+                        ? ' account-modal__input--valid'
+                        : ''
+                  }`}
+                  inputMode="numeric"
                   autoComplete="cc-exp"
                   placeholder="MM / YY"
+                  aria-invalid={addCardAttempted && !addCardValidation.expiry.ok}
+                  aria-describedby={`${baseId}-exp-err`}
                   value={cardExpiry}
-                  onChange={(e) => setCardExpiry(e.target.value)}
+                  onChange={(e) => setCardExpiry(formatExpiryInput(e.target.value))}
+                  onBlur={() => setAddCardAttempted(true)}
                 />
+                {addCardAttempted && expiryErrorMessage(addCardValidation.expiry) ? (
+                  <p id={`${baseId}-exp-err`} className="account-field-error" role="alert">
+                    {expiryErrorMessage(addCardValidation.expiry)}
+                  </p>
+                ) : null}
               </div>
               <div>
                 <label className="account-modal__label" htmlFor={`${baseId}-cvc`}>
@@ -1163,14 +1328,35 @@ export function AccountPage() {
                 </label>
                 <input
                   id={`${baseId}-cvc`}
-                  className="account-modal__input"
+                  className={`account-modal__input${
+                    addCardAttempted && !addCardValidation.cvc.ok
+                      ? ' account-modal__input--invalid'
+                      : addCardValidation.cvc.ok
+                        ? ' account-modal__input--valid'
+                        : ''
+                  }`}
+                  inputMode="numeric"
                   autoComplete="cc-csc"
                   placeholder="123"
+                  maxLength={3}
+                  aria-invalid={addCardAttempted && !addCardValidation.cvc.ok}
+                  aria-describedby={`${baseId}-cvc-err`}
                   value={cardCvc}
-                  onChange={(e) => setCardCvc(e.target.value)}
+                  onChange={(e) => setCardCvc(e.target.value.replace(/\D/g, '').slice(0, 3))}
+                  onBlur={() => setAddCardAttempted(true)}
                 />
+                {addCardAttempted && cvcErrorMessage(addCardValidation.cvc) ? (
+                  <p id={`${baseId}-cvc-err`} className="account-field-error" role="alert">
+                    {cvcErrorMessage(addCardValidation.cvc)}
+                  </p>
+                ) : null}
               </div>
             </div>
+            {addCardSaveError ? (
+              <p className="account-field-error" role="alert">
+                {addCardSaveError}
+              </p>
+            ) : null}
             <div className="account-modal__actions">
               <button type="button" className="account-btn account-btn--ghost" onClick={closeAddCard}>
                 Cancel
@@ -1178,7 +1364,7 @@ export function AccountPage() {
               <button
                 type="button"
                 className="account-btn account-btn--primary account-btn--min"
-                disabled={addCardLoading || addCardSuccess}
+                disabled={addCardLoading || addCardSuccess || (addCardAttempted && !addCardFormValid)}
                 onClick={onSaveCardStub}
               >
                 {addCardLoading ? (

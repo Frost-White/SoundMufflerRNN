@@ -18,9 +18,11 @@ Mevcut [docker-compose.yml](docker-compose.yml) stack'ini (PostgreSQL + FastAPI 
 
 ```mermaid
 flowchart LR
-  User["Browser"] -->|"HTTPS 443"| Caddy["Host Caddy"]
-  Caddy -->|"localhost:8080"| Frontend["Docker frontend nginx"]
-  Frontend -->|"/api /enhance"| Backend["Docker backend :8000"]
+  User["Browser"] -->|"HTTPS yourdomain.com"| CaddyWeb["Host Caddy"]
+  CaddyWeb -->|"127.0.0.1:8080"| Frontend["Docker frontend nginx"]
+  Frontend -->|"/enhance/web /api"| Backend["Docker backend :8000"]
+  ApiClient["API client"] -->|"HTTPS api.yourdomain.com"| CaddyApi["Host Caddy"]
+  CaddyApi -->|"127.0.0.1:8000"| Backend
   Backend --> DB["Docker PostgreSQL"]
 ```
 
@@ -38,7 +40,7 @@ Bugünkü compose yapısı:
 - Gerekçe: PyTorch CPU inference (~225 MB backend RAM idle+model), PostgreSQL volume, Docker overhead
 
 ### 2. Ön hazırlık checklist
-- Domain satın al ve DNS **A kaydı** → sunucu public IP
+- Domain satın al ve DNS **A kaydı** → sunucu public IP (`@`, `www`, **`api`** subdomain)
 - SSH erişimi (key-based auth önerisi)
 - Git repo URL'si ve deploy branch'i
 
@@ -67,8 +69,10 @@ curl http://127.0.0.1:8080/api/health
 | `POSTGRES_PASSWORD` | `openssl rand -hex 32` ile üret |
 | `JWT_SECRET` | `openssl rand -hex 32` ile üret |
 | `CORS_ORIGINS` | `https://yourdomain.com,https://www.yourdomain.com` |
+| `ENHANCE_WEB_RATE_LIMIT` | `30` (demo, IP başına/dk) |
+| `ENHANCE_API_RATE_LIMIT` | `120` (API key başına/dk) |
 
-Not: `ENHANCE_*` rate limit env'leri şu an compose'da expose edilmemiş; runbook'ta sunucuda `docker-compose.yml` environment bloğuna manuel ekleme seçeneği belgelenecek (opsiyonel sıkılaştırma).
+Not: `ENHANCE_*` değişkenleri repo [docker-compose.yml](docker-compose.yml) içinde backend environment bloğuna bağlıdır; `.env` ile override edilebilir.
 
 ### 5. HTTPS — host üzerinde Caddy
 Repoda dosya olmayacağı için runbook, sunucuda doğrudan oluşturulacak `/etc/caddy/Caddyfile` örneğini içerecek:
@@ -77,9 +81,16 @@ Repoda dosya olmayacağı için runbook, sunucuda doğrudan oluşturulacak `/etc
 yourdomain.com {
     reverse_proxy 127.0.0.1:8080
 }
+
+api.yourdomain.com {
+    reverse_proxy 127.0.0.1:8000
+}
 ```
 
-Adımlar: Caddy kurulumu, servis başlatma, DNS propagation kontrolü, otomatik Let's Encrypt.
+- **yourdomain.com** → frontend nginx (SPA + demo `/enhance/web`)
+- **api.yourdomain.com** → backend doğrudan (`POST /enhance`, `X-Api-Key` zorunlu)
+
+Adımlar: Caddy kurulumu, servis başlatma, DNS propagation kontrolü (`api` A kaydı dahil), otomatik Let's Encrypt.
 
 ### 6. Port güvenliği (sunucuda manuel)
 Runbook, production'da şu değişiklikleri **sunucudaki** `docker-compose.yml` üzerinde yapmayı tarif edecek (repo'ya commit gerekmez):
@@ -89,9 +100,11 @@ Runbook, production'da şu değişiklikleri **sunucudaki** `docker-compose.yml` 
 
 ### 7. Bilinen güvenlik notları
 Runbook'ta mevcut koddan türetilmiş uyarılar:
-- `/enhance` ve `/enhance/web` kimlik doğrulamasız ([backend/app/main.py](backend/app/main.py)) — CPU abuse riski
-- `/enhance` rate limit (120/dk) > `/enhance/web` (30/dk) — doğrudan backend erişimi bypass edebilir; bu yüzden backend portu dışarı kapatılmalı
-- `/api/auth`, `/api/billing`, `/api/keys` JWT korumalı — enhance ile ilgisi yok
+- **`POST /enhance/web`** (ana domain üzerinden) — keysiz demo; IP başına rate limit ([backend/app/main.py](backend/app/main.py))
+- **`POST /enhance`** (api subdomain) — `X-Api-Key` zorunlu; key başına rate limit; keysiz istek 401
+- API key oluşturma: login → `POST /api/keys` (JWT korumalı)
+- Backend `:8000` yalnızca `127.0.0.1` bind — dışarıdan doğrudan port erişimi yok; API trafiği Caddy → api subdomain üzerinden
+- `/api/auth`, `/api/billing`, `/api/keys` JWT korumalı
 
 ### 8. Yedekleme ve bakım
 - Günlük PostgreSQL dump cron örneği:
@@ -102,12 +115,14 @@ Runbook'ta mevcut koddan türetilmiş uyarılar:
 
 ### 9. Doğrulama checklist (canlıya geçiş)
 Runbook sonunda işaretlenebilir checklist:
-- [ ] DNS A kaydı çözülüyor
+- [ ] DNS A kaydı çözülüyor (`@`, `www`, `api`)
 - [ ] `.env` güçlü secret'lar
 - [ ] `docker compose ps` — 3 servis Up
-- [ ] `https://domain/api/health` → `{"status":"ok"}`
-- [ ] Frontend demo sayfası açılıyor
-- [ ] Backend 8000 dışarıdan erişilemiyor
+- [ ] `https://yourdomain.com/api/health` → `{"status":"ok"}`
+- [ ] Demo sayfası `/enhance/web` çalışıyor
+- [ ] `POST https://api.yourdomain.com/enhance` keysiz → 401
+- [ ] `POST https://api.yourdomain.com/enhance` + geçerli `X-Api-Key` → 200
+- [ ] Backend `:8000` dışarıdan doğrudan erişilemiyor (yalnızca Caddy localhost)
 - [ ] UFW sadece 22/80/443
 - [ ] DB backup cron kurulu
 
@@ -131,4 +146,3 @@ Format, mevcut [.cursor/stft-consistency-loss-upgrade_ba975d33.plan.md](.cursor/
 - Repoya `docker-compose.prod.yml`, Caddyfile veya deploy script eklenmeyecek (kullanıcı tercihi)
 - CI/CD pipeline
 - Managed DB / CDN / WAF
-- Enhance endpoint auth implementasyonu

@@ -1,13 +1,19 @@
 import logging
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.db.session import get_db
+from app.deps import get_active_api_key, get_current_user
 from app.inference import InferenceError, enhance_audio_bytes
+from app.models.api_key import ApiKey
+from app.models.user import User
 from app.routers import auth, billing, keys
+from app.services.api_entitlements import api_enhance_rate_limit, resolve_user_plan_id
 from app.services.rate_limit import rate_limiter
 
 settings = get_settings()
@@ -43,10 +49,34 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _client_ip(request: Request) -> str:
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+def _max_upload_bytes(settings: Settings) -> int:
+    return settings.enhance_max_upload_bytes
+
+
+def _reject_oversized_upload(size: int | None, max_bytes: int) -> None:
+    if size is not None and size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Maximum upload size is 2 MB.",
+        )
+
+
+async def _read_upload_capped(file: UploadFile, max_bytes: int) -> bytes:
+    _reject_oversized_upload(file.size, max_bytes)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="File too large. Maximum upload size is 2 MB.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _enforce_rate_limit(key: str, limit: int, window_seconds: int) -> None:
@@ -60,8 +90,13 @@ def _enforce_rate_limit(key: str, limit: int, window_seconds: int) -> None:
     )
 
 
-async def _run_enhance(file: UploadFile, route_kind: str) -> Response:
-    content = await file.read()
+async def _run_enhance(
+    file: UploadFile,
+    route_kind: str,
+    req_settings: Settings,
+) -> Response:
+    max_bytes = _max_upload_bytes(req_settings)
+    content = await _read_upload_capped(file, max_bytes)
     if not content:
         logger.warning("Enhance request received with empty file route=%s", route_kind)
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
@@ -104,29 +139,30 @@ async def _run_enhance(file: UploadFile, route_kind: str) -> Response:
 
 @app.post("/enhance")
 async def enhance_api(
-    request: Request,
     file: UploadFile = File(...),
+    api_key: ApiKey = Depends(get_active_api_key),
+    db: Session = Depends(get_db),
     req_settings: Settings = Depends(get_settings),
 ) -> Response:
-    client_ip = _client_ip(request)
+    plan_id = resolve_user_plan_id(db, api_key.user_id)
+    limit, window_seconds = api_enhance_rate_limit(plan_id, req_settings)
     _enforce_rate_limit(
-        key=f"enhance:api:{client_ip}",
-        limit=req_settings.enhance_api_rate_limit,
-        window_seconds=req_settings.enhance_api_rate_window_seconds,
+        key=f"enhance:api:{api_key.id}",
+        limit=limit,
+        window_seconds=window_seconds,
     )
-    return await _run_enhance(file=file, route_kind="api")
+    return await _run_enhance(file=file, route_kind="api", req_settings=req_settings)
 
 
 @app.post("/enhance/web")
 async def enhance_web(
-    request: Request,
     file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
     req_settings: Settings = Depends(get_settings),
 ) -> Response:
-    client_ip = _client_ip(request)
     _enforce_rate_limit(
-        key=f"enhance:web:{client_ip}",
+        key=f"enhance:web:{user.id}",
         limit=req_settings.enhance_web_rate_limit,
         window_seconds=req_settings.enhance_web_rate_window_seconds,
     )
-    return await _run_enhance(file=file, route_kind="web")
+    return await _run_enhance(file=file, route_kind="web", req_settings=req_settings)

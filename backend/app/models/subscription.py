@@ -31,6 +31,9 @@ class UserSubscription(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True
     )
     plan_id: Mapped[str] = mapped_column(String(32), ForeignKey("subscription_plans.id"))
+    scheduled_plan_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("subscription_plans.id"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(32), default="active")
     current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -39,4 +42,11 @@ class UserSubscription(Base):
     external_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     user: Mapped[User] = relationship("User", back_populates="subscription")
-    plan: Mapped[SubscriptionPlan] = relationship("SubscriptionPlan")
+    plan: Mapped[SubscriptionPlan] = relationship(
+        "SubscriptionPlan",
+        foreign_keys=[plan_id],
+    )
+    scheduled_plan: Mapped[SubscriptionPlan | None] = relationship(
+        "SubscriptionPlan",
+        foreign_keys=[scheduled_plan_id],
+    )

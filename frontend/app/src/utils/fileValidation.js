@@ -1,5 +1,6 @@
 const ALLOWED_TYPES = ['audio/wav', 'audio/mpeg', 'audio/mp3']
-const MAX_FILE_BYTES = 20 * 1024 * 1024
+export const MAX_AUDIO_FILE_BYTES = 2 * 1024 * 1024
+const MAX_FILE_BYTES = MAX_AUDIO_FILE_BYTES
 
 export function validateAudioFile(file) {
   if (!file) {
@@ -11,7 +12,7 @@ export function validateAudioFile(file) {
   }
 
   if (file.size > MAX_FILE_BYTES) {
-    return 'File size must be under 20MB.'
+    return 'File size must be 2 MB or smaller.'
   }
 
   return ''
