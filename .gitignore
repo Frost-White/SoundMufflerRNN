@@ -1,6 +1,11 @@
 train_data/
 __pycache__/
 .venv/
+.vscode/
+**/node_modules/
+.pytest_cache/
+.cursor/
+backend/*.egg-info/
 .env
 backend/.env
 frontend/app/.env
